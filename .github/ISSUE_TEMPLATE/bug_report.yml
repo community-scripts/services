@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         ## Bug Report
-        Please describe the issue you encountered. Check [existing issues](https://github.com/community-scripts/telemetry-service/issues?q=is%3Aissue) first to avoid duplicates.
+        Please describe the issue you encountered. Check [existing issues](https://github.com/community-scripts/services/issues?q=is%3Aissue) first to avoid duplicates.
 
   - type: dropdown
     id: component

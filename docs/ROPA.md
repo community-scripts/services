@@ -10,7 +10,7 @@
 |-------|-------|
 | **Organization** | Community Scripts (Open Source Project) |
 | **Project Name** | Telemetry Service |
-| **Repository** | https://github.com/community-scripts/telemetry-service |
+| **Repository** | https://github.com/community-scripts/services |
 | **Contact** | Via GitHub Issues |
 
 ---

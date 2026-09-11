@@ -1,4 +1,4 @@
-module github.com/community-scripts/telemetry-service
+module github.com/community-scripts/services
 
 go 1.27.0
 

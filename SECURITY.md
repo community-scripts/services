@@ -19,7 +19,7 @@ We take security vulnerabilities in the telemetry-service seriously. If you disc
 Instead, please report security issues via one of these methods:
 
 1. **GitHub Security Advisories** (preferred):
-   - Go to [Security Advisories](https://github.com/community-scripts/telemetry-service/security/advisories)
+   - Go to [Security Advisories](https://github.com/community-scripts/services/security/advisories)
    - Click "Report a vulnerability"
    - Fill out the form with details
 

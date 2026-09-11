@@ -1,10 +1,26 @@
-# Telemetry Service
+# services
 
-A standalone Go microservice that collects anonymous telemetry data from [ProxmoxVE](https://github.com/community-scripts/ProxmoxVE) and [ProxmoxVED](https://github.com/community-scripts/ProxmoxVED) script installations.
+Backend services for [ProxmoxVE](https://github.com/community-scripts/ProxmoxVE) and
+[ProxmoxVED](https://github.com/community-scripts/ProxmoxVED), in one Go module:
 
-## Overview
+| Service | Path | What it does |
+| --- | --- | --- |
+| **Telemetry** | `cmd/telemetry` | Collects anonymous install telemetry from the bash scripts and serves the public dashboard |
+| **Discord bot** | `cmd/discord` | Turns a Discord support thread into a GitHub issue on a moderator's command |
 
-This service acts as a telemetry ingestion layer between the bash installation scripts and a PocketBase backend. When users run scripts from the ProxmoxVE/ProxmoxVED repositories, optional anonymous usage data is sent here for aggregation and analysis.
+Each builds its own binary and its own image; they share nothing but the module.
+
+```bash
+go build ./cmd/telemetry
+go build ./cmd/discord
+go test ./...
+```
+
+---
+
+## Telemetry — overview
+
+This service acts as a telemetry ingestion layer between the bash installation scripts and a ClickHouse backend. When users run scripts from the ProxmoxVE/ProxmoxVED repositories, optional anonymous usage data is sent here for aggregation and analysis.
 
 **What gets collected:**
 
@@ -33,7 +49,7 @@ This service acts as a telemetry ingestion layer between the bash installation s
 ## Features
 
 - **Telemetry Ingestion** - Receives and validates telemetry data from bash scripts
-- **PocketBase Integration** - Stores data in PocketBase collections
+- **ClickHouse Storage** - Stores and aggregates records in ClickHouse
 - **Rate Limiting** - Configurable per-IP rate limiting to prevent abuse
 - **Caching** - In-memory or Redis-backed caching support
 - **Email Alerts** - SMTP-based alerts when failure rates exceed thresholds
@@ -44,7 +60,7 @@ This service acts as a telemetry ingestion layer between the bash installation s
 ```mermaid
 flowchart LR
     A[Bash Scripts<br>ProxmoxVE/VED] --> B[Telemetry Service]
-    B --> C[(PocketBase)]
+    B --> C[(ClickHouse)]
     B --> D[Dashboard]
 ```
 
@@ -69,14 +85,26 @@ The built-in dashboard is publicly available at `https://telemetry.community-scr
 ## Project Structure
 
 ```
-service.go      # Main service, HTTP handlers, rate limiting
-cache.go        # In-memory and Redis caching
-alerts.go       # SMTP alert system
-dashboard.go    # Dashboard HTML generation
-Dockerfile      # Container build
-entrypoint.sh   # Container entrypoint
-go.mod          # Go module definition
+cmd/telemetry/
+  service.go        # HTTP handlers, rate limiting
+  clickhouse.go     # Storage and aggregation queries
+  cache.go          # In-memory and Redis caching
+  alerts.go         # SMTP alert system
+  dashboard.go      # Shared dashboard data types
+  public/           # Dashboard templates and assets (go:embed)
+cmd/discord/
+  main.go           # Session, command registration, interaction handling
+  thread.go         # Thread reader and issue renderer
+  store.go          # PocketBase client
+  github.go         # GitHub App auth and issue creation
+Dockerfile          # Telemetry image
+Dockerfile.discord  # Discord bot image
+entrypoint.sh       # Telemetry container entrypoint
+go.mod              # Go module definition
 ```
+
+`public/` and `testdata/` live beside the telemetry sources rather than at the
+repository root because `//go:embed` cannot reach into a parent directory.
 
 ## Related Projects
 
@@ -114,6 +142,58 @@ For full details, see:
 - **[Privacy & Telemetry Documentation](docs/PRIVACY.md)** — What we collect, how, and why
 - **[Records of Processing Activities (ROPA)](docs/ROPA.md)** — GDPR Art. 30
 - **[Technical & Organizational Measures (TOMS)](docs/TOMS.md)** — GDPR Art. 32
+
+---
+
+## Discord bot
+
+Turns a Discord support thread into a GitHub issue when a moderator asks for it. The
+thread is copied across verbatim — authors, timestamps, message order — so nothing is
+summarised away or has to be retyped.
+
+Right-click any message in a thread or forum post → **Apps → Create GitHub Issue**. The
+reply is ephemeral; the issue link is posted once into the thread.
+
+### Behaviour
+
+- **Moderator only.** The command is hidden from members without *Manage Messages*, but
+  that is cosmetic — the binding check runs server-side against
+  `discord_config.allowed_role_ids`.
+- **One issue per thread**, enforced by a unique index on `discord_issues.thread_id`. A
+  second run returns the existing link.
+- **Images are linked, not rehosted.** Discord attachment URLs are signed and expire
+  after roughly 24 hours, so every attachment also carries a permanent link to its
+  message, and the issue header links the thread.
+- **Long threads are truncated** below GitHub's 65536-character body limit, with a
+  pointer back to Discord.
+
+### Setup
+
+1. *Discord application* — enable the **Message Content** intent, invite with the `bot`
+   and `applications.commands` scopes, grant **Read Message History** and **Send
+   Messages** in the support channels. The context-menu command registers itself per
+   guild at startup, so it appears immediately.
+2. *GitHub App* — **Issues: Read and write** on the target repository; note app id,
+   installation id and private key.
+3. *PocketBase* — import `cmd/discord/pocketbase-schema.json` under *Settings → Import
+   collections*, then add one `discord_config` record:
+
+   | Field | Type | Example |
+   | --- | --- | --- |
+   | `guild_id` | text | `000000000000000001` |
+   | `allowed_role_ids` | json | `["000000000000000002"]` |
+   | `target_repo` | text | `community-scripts/ProxmoxVE` |
+   | `default_labels` | json | `["bug"]` |
+   | `enabled` | bool | `true` |
+
+   Snowflakes are `text` on purpose — they are 64-bit and JavaScript clients would
+   silently mangle them past 2^53 as numbers.
+
+### Environment
+
+`DISCORD_TOKEN`, `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`,
+`GITHUB_APP_PRIVATE_KEY` (PEM or base64), `POCKETBASE_URL`, `POCKETBASE_ADMIN_EMAIL`,
+`POCKETBASE_ADMIN_PASSWORD`, optional `MAX_THREAD_MESSAGES` (default 500).
 
 ## License
 

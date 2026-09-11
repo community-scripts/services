@@ -149,7 +149,7 @@ the processing is GDPR-compliant. For detailed documentation, see:
 
 ## Contact & Issues
 
-- **Questions:** Open an issue at [telemetry-service](https://github.com/community-scripts/telemetry-service/issues)
+- **Questions:** Open an issue at [services](https://github.com/community-scripts/services/issues)
 - **Privacy concerns:** Open an issue with the `privacy` label
 - **Source code:** Fully open source — review the [service implementation](../service.go)
 - **Discussion:** [ProxmoxVE Discussions](https://github.com/community-scripts/ProxmoxVE/discussions)

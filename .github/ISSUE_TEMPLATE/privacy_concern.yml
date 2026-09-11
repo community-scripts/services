@@ -9,9 +9,9 @@ body:
         We take your privacy seriously. Please describe your concern and we'll address it promptly.
 
         Before submitting, you may want to review:
-        - [Privacy & Telemetry Documentation](https://github.com/community-scripts/telemetry-service/blob/main/docs/PRIVACY.md)
-        - [Records of Processing Activities (ROPA)](https://github.com/community-scripts/telemetry-service/blob/main/docs/ROPA.md)
-        - [Technical & Organizational Measures (TOMS)](https://github.com/community-scripts/telemetry-service/blob/main/docs/TOMS.md)
+        - [Privacy & Telemetry Documentation](https://github.com/community-scripts/services/blob/main/docs/PRIVACY.md)
+        - [Records of Processing Activities (ROPA)](https://github.com/community-scripts/services/blob/main/docs/ROPA.md)
+        - [Technical & Organizational Measures (TOMS)](https://github.com/community-scripts/services/blob/main/docs/TOMS.md)
 
   - type: dropdown
     id: concern_type

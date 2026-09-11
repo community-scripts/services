@@ -4,7 +4,7 @@ contact_links:
       url: https://telemetry.community-scripts.org
       about: View the live telemetry dashboard with aggregated statistics.
     - name: 🔒 Privacy Documentation
-      url: https://github.com/community-scripts/telemetry-service/blob/main/docs/PRIVACY.md
+      url: https://github.com/community-scripts/services/blob/main/docs/PRIVACY.md
       about: Read what data is collected, how it's processed, and how to opt out.
     - name: 💻 Discord
       url: https://discord.gg/jsYVk5JBxq

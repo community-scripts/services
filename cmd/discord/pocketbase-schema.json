@@ -1,0 +1,59 @@
+[
+  {
+    "name": "discord_config",
+    "type": "base",
+    "listRule": null,
+    "viewRule": null,
+    "createRule": null,
+    "updateRule": null,
+    "deleteRule": null,
+    "fields": [
+      { "name": "guild_id", "type": "text", "required": true, "pattern": "^[0-9]{17,20}$" },
+      { "name": "allowed_role_ids", "type": "json", "required": false, "maxSize": 20000 },
+      {
+        "name": "target_repo",
+        "type": "text",
+        "required": true,
+        "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+      },
+      { "name": "default_labels", "type": "json", "required": false, "maxSize": 20000 },
+      { "name": "enabled", "type": "bool", "required": false },
+      { "name": "created", "type": "autodate", "onCreate": true, "onUpdate": false },
+      { "name": "updated", "type": "autodate", "onCreate": true, "onUpdate": true }
+    ],
+    "indexes": [
+      "CREATE UNIQUE INDEX `idx_discord_config_guild` ON `discord_config` (`guild_id`)"
+    ]
+  },
+  {
+    "name": "discord_issues",
+    "type": "base",
+    "listRule": null,
+    "viewRule": null,
+    "createRule": null,
+    "updateRule": null,
+    "deleteRule": null,
+    "fields": [
+      { "name": "guild_id", "type": "text", "required": true, "pattern": "^[0-9]{17,20}$" },
+      { "name": "thread_id", "type": "text", "required": true, "pattern": "^[0-9]{17,20}$" },
+      { "name": "message_id", "type": "text", "required": true, "pattern": "^[0-9]{17,20}$" },
+      {
+        "name": "repo",
+        "type": "text",
+        "required": true,
+        "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+      },
+      { "name": "issue_number", "type": "number", "required": true, "min": 1, "onlyInt": true },
+      { "name": "issue_url", "type": "url", "required": true },
+      { "name": "created_by_id", "type": "text", "required": true, "pattern": "^[0-9]{17,20}$" },
+      { "name": "created_by_name", "type": "text", "required": false },
+      { "name": "message_count", "type": "number", "required": false, "min": 0, "onlyInt": true },
+      { "name": "created", "type": "autodate", "onCreate": true, "onUpdate": false },
+      { "name": "updated", "type": "autodate", "onCreate": true, "onUpdate": true }
+    ],
+    "indexes": [
+      "CREATE UNIQUE INDEX `idx_discord_issues_thread` ON `discord_issues` (`thread_id`)",
+      "CREATE INDEX `idx_discord_issues_guild` ON `discord_issues` (`guild_id`)"
+    ]
+  }
+]
