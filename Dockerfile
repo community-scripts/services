@@ -3,7 +3,7 @@ WORKDIR /src
 COPY go.mod go.sum* ./
 RUN go mod download 2>/dev/null || true
 COPY . .
-RUN go build -trimpath -ldflags "-s -w" -o /out/telemetry-service .
+RUN go build -trimpath -ldflags "-s -w" -o /out/telemetry-service ./cmd/telemetry
 
 FROM alpine:3.23
 RUN apk add --no-cache ca-certificates tzdata

@@ -4,6 +4,7 @@ go 1.27.0
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.46.0
+	github.com/bwmarrin/discordgo v0.29.0
 	github.com/redis/go-redis/v9 v9.19.0
 )
 
@@ -14,6 +15,7 @@ require (
 	github.com/go-faster/city v1.0.1 // indirect
 	github.com/go-faster/errors v0.7.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/gorilla/websocket v1.4.2 // indirect
 	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/paulmach/orb v0.13.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.26 // indirect
@@ -23,5 +25,6 @@ require (
 	go.opentelemetry.io/otel/trace v1.43.0 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
+	golang.org/x/crypto v0.48.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect
 )
