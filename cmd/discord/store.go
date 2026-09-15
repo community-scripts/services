@@ -31,6 +31,7 @@ type guildSettings struct {
 }
 
 type issueRecord struct {
+	ID          string `json:"id"`
 	IssueNumber int    `json:"issue_number"`
 	IssueURL    string `json:"issue_url"`
 }
@@ -239,5 +240,15 @@ func (s *store) recordIssue(entry map[string]any) error {
 		return err
 	}
 	_, err = s.do(http.MethodPost, "/api/collections/discord_issues/records", payload)
+	return err
+}
+
+// updateIssueRecord keeps the bookkeeping in step when a thread is re-imported.
+func (s *store) updateIssueRecord(id string, entry map[string]any) error {
+	payload, err := json.Marshal(entry)
+	if err != nil {
+		return err
+	}
+	_, err = s.do(http.MethodPatch, "/api/collections/discord_issues/records/"+id, payload)
 	return err
 }

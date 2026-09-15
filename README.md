@@ -159,8 +159,11 @@ reply is ephemeral; the issue link is posted once into the thread.
 - **Moderator only.** The command is hidden from members without *Manage Messages*, but
   that is cosmetic — the binding check runs server-side against
   `discord_config.allowed_role_ids`.
-- **One issue per thread**, enforced by a unique index on `discord_issues.thread_id`. A
-  second run returns the existing link.
+- **One issue per thread**, enforced by a unique index on `discord_issues.thread_id`.
+  Running it again on the same thread refreshes that issue's body instead of
+  opening a second one, so a conversation that carried on after the export ends
+  up in the issue. Title and labels are left alone, since both may have been
+  corrected on GitHub.
 - **Images are linked, not rehosted.** Discord attachment URLs are signed and expire
   after roughly 24 hours, so every attachment also carries a permanent link to its
   message, and the issue header links the thread.

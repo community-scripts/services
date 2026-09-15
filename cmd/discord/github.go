@@ -192,3 +192,42 @@ func (g *gitHub) createIssue(fullName, title, body string, labels []string) (cre
 	}
 	return issue, nil
 }
+
+// updateIssue refreshes the body of an issue that already mirrors this thread.
+// Title and labels are left alone: they may have been corrected on GitHub, and
+// the thread is only the source of the conversation.
+func (g *gitHub) updateIssue(fullName string, number int, body string) error {
+	owner, repo, err := splitRepo(fullName)
+	if err != nil {
+		return err
+	}
+	token, err := g.installationToken()
+	if err != nil {
+		return err
+	}
+
+	encoded, err := json.Marshal(map[string]any{"body": body})
+	if err != nil {
+		return err
+	}
+
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/issues/%d", owner, repo, number)
+	req, err := http.NewRequest(http.MethodPatch, url, bytes.NewReader(encoded))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := g.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("update issue: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("update issue: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	return nil
+}

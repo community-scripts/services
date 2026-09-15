@@ -301,9 +301,6 @@ func (b *bot) handle(s *discordgo.Session, i *discordgo.InteractionCreate) (stri
 	if err != nil {
 		return "", fmt.Errorf("check for existing issue: %w", err)
 	}
-	if existing != nil {
-		return "This thread already has an issue: " + existing.IssueURL, nil
-	}
 
 	messages, err := collectThread(s, channel.ID, b.cfg.maxThreadMessages)
 	if err != nil {
@@ -319,18 +316,33 @@ func (b *bot) handle(s *discordgo.Session, i *discordgo.InteractionCreate) (stri
 		moderator = i.Member.User.Username
 	}
 
+	body := renderIssueBody(renderInput{
+		Messages:  messages,
+		GuildID:   i.GuildID,
+		ChannelID: channel.ID,
+		ThreadURL: threadURL,
+		Moderator: moderator,
+		Meta:      modalValues(i),
+		Uploads:   b.copyImages(messages),
+	})
+
+	// Re-importing a thread refreshes the issue it already has. A thread keeps
+	// growing after the first export, and a second issue for the same
+	// conversation helps nobody.
+	if existing != nil {
+		if err := b.github.updateIssue(settings.TargetRepo, existing.IssueNumber, body); err != nil {
+			return "", err
+		}
+		if err := b.store.updateIssueRecord(existing.ID, map[string]any{"message_count": len(messages)}); err != nil {
+			log.Printf("discord bot: issue %s updated but not recorded: %v", existing.IssueURL, err)
+		}
+		return fmt.Sprintf("Updated %s from %d message(s).", existing.IssueURL, len(messages)), nil
+	}
+
 	issue, err := b.github.createIssue(
 		settings.TargetRepo,
 		deriveTitle(channel.Name, messages[0]),
-		renderIssueBody(renderInput{
-			Messages:  messages,
-			GuildID:   i.GuildID,
-			ChannelID: channel.ID,
-			ThreadURL: threadURL,
-			Moderator: moderator,
-			Meta:      modalValues(i),
-			Uploads:   b.copyImages(messages),
-		}),
+		body,
 		settings.DefaultLabels,
 	)
 	if err != nil {
