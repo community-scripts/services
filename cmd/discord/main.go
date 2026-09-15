@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"unicode"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -68,7 +69,15 @@ func normalisePEM(raw string) string {
 	if strings.Contains(raw, "BEGIN") {
 		return strings.ReplaceAll(raw, "\\n", "\n")
 	}
-	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(raw))
+	// base64 wraps at 76 columns by default and env fields pick up stray
+	// newlines, neither of which DecodeString tolerates.
+	compact := strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) {
+			return -1
+		}
+		return r
+	}, raw)
+	decoded, err := base64.StdEncoding.DecodeString(compact)
 	if err != nil {
 		return raw
 	}
