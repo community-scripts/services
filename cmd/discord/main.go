@@ -18,14 +18,15 @@ import (
 const commandName = "Create GitHub Issue"
 
 type appConfig struct {
-	discordToken       string
-	githubAppID        string
-	githubInstallation string
-	githubKey          string
-	pocketbaseURL      string
-	pocketbaseEmail    string
-	pocketbasePassword string
-	maxThreadMessages  int
+	discordToken         string
+	githubAppID          string
+	githubInstallation   string
+	githubKey            string
+	pocketbaseURL        string
+	pocketbaseEmail      string
+	pocketbasePassword   string
+	pocketbaseCollection string
+	maxThreadMessages    int
 }
 
 func loadConfig() (appConfig, error) {
@@ -39,14 +40,15 @@ func loadConfig() (appConfig, error) {
 	}
 
 	cfg := appConfig{
-		discordToken:       get("DISCORD_TOKEN"),
-		githubAppID:        get("GITHUB_APP_ID"),
-		githubInstallation: get("GITHUB_APP_INSTALLATION_ID"),
-		githubKey:          normalisePEM(get("GITHUB_APP_PRIVATE_KEY")),
-		pocketbaseURL:      get("POCKETBASE_URL"),
-		pocketbaseEmail:    get("POCKETBASE_ADMIN_EMAIL"),
-		pocketbasePassword: get("POCKETBASE_ADMIN_PASSWORD"),
-		maxThreadMessages:  500,
+		discordToken:         get("DISCORD_TOKEN"),
+		githubAppID:          get("GITHUB_APP_ID"),
+		githubInstallation:   get("GITHUB_APP_INSTALLATION_ID"),
+		githubKey:            normalisePEM(get("GITHUB_APP_PRIVATE_KEY")),
+		pocketbaseURL:        get("POCKETBASE_URL"),
+		pocketbaseEmail:      get("POCKETBASE_ADMIN_EMAIL"),
+		pocketbasePassword:   get("POCKETBASE_ADMIN_PASSWORD"),
+		pocketbaseCollection: os.Getenv("POCKETBASE_AUTH_COLLECTION"),
+		maxThreadMessages:    500,
 	}
 	if len(missing) > 0 {
 		return cfg, fmt.Errorf("missing environment variables: %s", strings.Join(missing, ", "))
@@ -131,7 +133,7 @@ func main() {
 
 	b := &bot{
 		cfg:    cfg,
-		store:  newStore(cfg.pocketbaseURL, cfg.pocketbaseEmail, cfg.pocketbasePassword),
+		store:  newStore(cfg.pocketbaseURL, cfg.pocketbaseEmail, cfg.pocketbasePassword, cfg.pocketbaseCollection),
 		github: gh,
 	}
 

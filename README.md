@@ -192,8 +192,16 @@ reply is ephemeral; the issue link is posted once into the thread.
 ### Environment
 
 `DISCORD_TOKEN`, `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`,
-`GITHUB_APP_PRIVATE_KEY` (PEM or base64), `POCKETBASE_URL`, `POCKETBASE_ADMIN_EMAIL`,
-`POCKETBASE_ADMIN_PASSWORD`, optional `MAX_THREAD_MESSAGES` (default 500).
+`GITHUB_APP_PRIVATE_KEY` (PEM or base64, in any mangling an env field inflicts),
+`POCKETBASE_URL`, `POCKETBASE_ADMIN_EMAIL`, `POCKETBASE_ADMIN_PASSWORD`, optional
+`MAX_THREAD_MESSAGES` (default 500).
+
+Optional `POCKETBASE_AUTH_COLLECTION` authenticates against a normal auth
+collection instead of the superuser, so the bot can run with an account that only
+reaches its own two collections. Set it to the collection name and put that
+account's identity and password in `POCKETBASE_ADMIN_EMAIL` /
+`POCKETBASE_ADMIN_PASSWORD`. The collections then need API rules: `discord_config`
+list and view, `discord_issues` list, view and create.
 
 ## License
 

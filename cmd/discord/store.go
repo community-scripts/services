@@ -13,10 +13,11 @@ import (
 )
 
 type store struct {
-	baseURL  string
-	email    string
-	password string
-	client   *http.Client
+	baseURL    string
+	email      string
+	password   string
+	collection string
+	client     *http.Client
 
 	mu    sync.Mutex
 	token string
@@ -34,12 +35,13 @@ type issueRecord struct {
 	IssueURL    string `json:"issue_url"`
 }
 
-func newStore(baseURL, email, password string) *store {
+func newStore(baseURL, email, password, collection string) *store {
 	return &store{
-		baseURL:  strings.TrimRight(baseURL, "/"),
-		email:    email,
-		password: password,
-		client:   &http.Client{Timeout: 20 * time.Second},
+		baseURL:    strings.TrimRight(baseURL, "/"),
+		email:      email,
+		password:   password,
+		collection: collection,
+		client:     &http.Client{Timeout: 20 * time.Second},
 	}
 }
 
@@ -51,8 +53,15 @@ func (s *store) authenticate() error {
 		return err
 	}
 
-	var lastErr error
-	for _, path := range []string{"/api/collections/_superusers/auth-with-password", "/api/admins/auth-with-password"} {
+	// A dedicated collection user is preferred; the superuser paths stay as the
+	// fallback. /api/admins is gone in PocketBase 0.23+.
+	paths := []string{"/api/collections/_superusers/auth-with-password", "/api/admins/auth-with-password"}
+	if s.collection != "" {
+		paths = []string{"/api/collections/" + s.collection + "/auth-with-password"}
+	}
+
+	var attempts []string
+	for _, path := range paths {
 		req, err := http.NewRequest(http.MethodPost, s.baseURL+path, bytes.NewReader(payload))
 		if err != nil {
 			return err
@@ -61,13 +70,13 @@ func (s *store) authenticate() error {
 
 		resp, err := s.client.Do(req)
 		if err != nil {
-			lastErr = err
+			attempts = append(attempts, path+": "+err.Error())
 			continue
 		}
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
-			lastErr = fmt.Errorf("pocketbase auth %s: %s", path, resp.Status)
+			attempts = append(attempts, path+": "+resp.Status)
 			continue
 		}
 
@@ -75,7 +84,7 @@ func (s *store) authenticate() error {
 			Token string `json:"token"`
 		}
 		if err := json.Unmarshal(body, &out); err != nil {
-			lastErr = err
+			attempts = append(attempts, path+": "+err.Error())
 			continue
 		}
 		s.mu.Lock()
@@ -83,7 +92,7 @@ func (s *store) authenticate() error {
 		s.mu.Unlock()
 		return nil
 	}
-	return fmt.Errorf("pocketbase auth failed: %w", lastErr)
+	return fmt.Errorf("pocketbase auth failed: %s", strings.Join(attempts, "; "))
 }
 
 func (s *store) currentToken() string {
