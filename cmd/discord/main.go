@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"regexp"
@@ -186,14 +187,63 @@ func (b *bot) onGuildCreate(s *discordgo.Session, g *discordgo.GuildCreate) {
 	log.Printf("discord bot: joined guild %s (%s)", g.Name, g.ID)
 }
 
+// The five fields Discord allows in a modal. All optional: a helper fills in
+// what the thread does not already say, and blanks are dropped from the issue.
+var modalFields = []struct{ ID, Label, Placeholder string }{
+	{"script", "Script name", "prometheus"},
+	{"os", "OS and version", "Debian 13"},
+	{"pve", "Proxmox version", "9.2.18"},
+	{"summary", "Short summary", "Update downgrades instead of upgrading"},
+	{"notes", "Notes for maintainers", ""},
+}
+
+const modalPrefix = "create-issue:"
+
 func (b *bot) onInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	if i.Type != discordgo.InteractionApplicationCommand {
-		return
+	switch i.Type {
+	case discordgo.InteractionApplicationCommand:
+		if i.ApplicationCommandData().Name == commandName {
+			b.openModal(s, i)
+		}
+	case discordgo.InteractionModalSubmit:
+		if strings.HasPrefix(i.ModalSubmitData().CustomID, modalPrefix) {
+			b.submitModal(s, i)
+		}
 	}
-	if i.ApplicationCommandData().Name != commandName {
-		return
+}
+
+// The modal opens without touching PocketBase: an interaction has to be
+// answered within three seconds, and the checks belong on the submit, where
+// the reply can be deferred.
+func (b *bot) openModal(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	rows := make([]discordgo.MessageComponent, 0, len(modalFields))
+	for _, f := range modalFields {
+		rows = append(rows, discordgo.ActionsRow{Components: []discordgo.MessageComponent{
+			discordgo.TextInput{
+				CustomID:    f.ID,
+				Label:       f.Label,
+				Style:       discordgo.TextInputShort,
+				Placeholder: f.Placeholder,
+				Required:    false,
+				MaxLength:   200,
+			},
+		}})
 	}
 
+	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseModal,
+		Data: &discordgo.InteractionResponseData{
+			CustomID:   modalPrefix + i.ChannelID + ":" + i.ApplicationCommandData().TargetID,
+			Title:      "Create GitHub Issue",
+			Components: rows,
+		},
+	})
+	if err != nil {
+		log.Printf("discord bot: open modal: %v", err)
+	}
+}
+
+func (b *bot) submitModal(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral},
@@ -231,7 +281,15 @@ func (b *bot) handle(s *discordgo.Session, i *discordgo.InteractionCreate) (stri
 		return "You do not have a role that is allowed to create issues.", nil
 	}
 
-	channel, err := s.Channel(i.ChannelID)
+	// The modal submit carries no target message, so the ids ride along in the
+	// custom id set when it was opened.
+	parts := strings.SplitN(strings.TrimPrefix(i.ModalSubmitData().CustomID, modalPrefix), ":", 2)
+	if len(parts) != 2 {
+		return "", fmt.Errorf("malformed modal id %q", i.ModalSubmitData().CustomID)
+	}
+	channelID, targetMessageID := parts[0], parts[1]
+
+	channel, err := s.Channel(channelID)
 	if err != nil {
 		return "", fmt.Errorf("read channel: %w", err)
 	}
@@ -270,6 +328,8 @@ func (b *bot) handle(s *discordgo.Session, i *discordgo.InteractionCreate) (stri
 			ChannelID: channel.ID,
 			ThreadURL: threadURL,
 			Moderator: moderator,
+			Meta:      modalValues(i),
+			Uploads:   b.copyImages(messages),
 		}),
 		settings.DefaultLabels,
 	)
@@ -280,7 +340,7 @@ func (b *bot) handle(s *discordgo.Session, i *discordgo.InteractionCreate) (stri
 	entry := map[string]any{
 		"guild_id":        i.GuildID,
 		"thread_id":       channel.ID,
-		"message_id":      i.ApplicationCommandData().TargetID,
+		"message_id":      targetMessageID,
 		"repo":            settings.TargetRepo,
 		"issue_number":    issue.Number,
 		"issue_url":       issue.URL,
@@ -316,4 +376,53 @@ func isThread(t discordgo.ChannelType) bool {
 	return t == discordgo.ChannelTypeGuildPublicThread ||
 		t == discordgo.ChannelTypeGuildPrivateThread ||
 		t == discordgo.ChannelTypeGuildNewsThread
+}
+
+// modalValues pairs each filled-in field with its label, keeping the order the
+// helper saw. Empty ones are dropped by the renderer.
+func modalValues(i *discordgo.InteractionCreate) []metaField {
+	entered := map[string]string{}
+	for _, row := range i.ModalSubmitData().Components {
+		ar, ok := row.(*discordgo.ActionsRow)
+		if !ok {
+			continue
+		}
+		for _, c := range ar.Components {
+			if in, ok := c.(*discordgo.TextInput); ok {
+				entered[in.CustomID] = strings.TrimSpace(in.Value)
+			}
+		}
+	}
+
+	out := make([]metaField, 0, len(modalFields))
+	for _, f := range modalFields {
+		out = append(out, metaField{Label: f.Label, Value: entered[f.ID]})
+	}
+	return out
+}
+
+// copyImages moves image attachments into PocketBase so the issue still shows
+// them once Discord's signed links expire. A failure costs that one image, not
+// the issue.
+func (b *bot) copyImages(messages []*discordgo.Message) map[string]string {
+	uploads := map[string]string{}
+	for _, m := range messages {
+		for _, at := range m.Attachments {
+			if !isImage(at.Filename, at.ContentType) {
+				continue
+			}
+			data, err := fetchAttachment(http.DefaultClient, at.URL)
+			if err != nil {
+				log.Printf("discord bot: fetch %s: %v", at.Filename, err)
+				continue
+			}
+			url, err := b.store.uploadAttachment(at.Filename, data)
+			if err != nil {
+				log.Printf("discord bot: upload %s: %v", at.Filename, err)
+				continue
+			}
+			uploads[at.URL] = url
+		}
+	}
+	return uploads
 }

@@ -104,6 +104,15 @@ func (s *store) currentToken() string {
 // Retries once on 401/403 so an expired token refreshes itself instead of
 // surfacing as a failed command.
 func (s *store) do(method, path string, body []byte) ([]byte, error) {
+	return s.request(method, path, "application/json", body)
+}
+
+// upload posts a multipart body, which PocketBase needs for file fields.
+func (s *store) upload(path, contentType string, body []byte) ([]byte, error) {
+	return s.request(http.MethodPost, path, contentType, body)
+}
+
+func (s *store) request(method, path, contentType string, body []byte) ([]byte, error) {
 	attempt := func() (*http.Response, error) {
 		var reader io.Reader
 		if body != nil {
@@ -116,8 +125,8 @@ func (s *store) do(method, path string, body []byte) ([]byte, error) {
 		if token := s.currentToken(); token != "" {
 			req.Header.Set("Authorization", token)
 		}
-		if body != nil {
-			req.Header.Set("Content-Type", "application/json")
+		if body != nil && contentType != "" {
+			req.Header.Set("Content-Type", contentType)
 		}
 		return s.client.Do(req)
 	}

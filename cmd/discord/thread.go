@@ -82,12 +82,23 @@ func quote(text string) string {
 	return strings.Join(lines, "\n")
 }
 
+// metaField is one line of the summary the moderator filled in. Order matters,
+// so this is a slice rather than a map.
+type metaField struct {
+	Label string
+	Value string
+}
+
 type renderInput struct {
 	Messages  []*discordgo.Message
 	GuildID   string
 	ChannelID string
 	ThreadURL string
 	Moderator string
+	Meta      []metaField
+	// Attachment URL -> permanent URL for the images copied out of Discord.
+	// Anything missing here stays a link.
+	Uploads map[string]string
 }
 
 func renderIssueBody(in renderInput) string {
@@ -96,7 +107,25 @@ func renderIssueBody(in renderInput) string {
 
 	// Backticked, not @-prefixed: a Discord username is not a GitHub one, and a
 	// bare @name would notify whoever happens to hold it on GitHub.
-	fmt.Fprintf(&b, "_Imported from Discord by `%s` — [open the thread](%s)._\n\n---\n\n", in.Moderator, in.ThreadURL)
+	fmt.Fprintf(&b, "_Imported from Discord by `%s` — [open the thread](%s)._\n\n", in.Moderator, in.ThreadURL)
+
+	// Only what the moderator filled in; an empty field is left out rather than
+	// rendered as a blank nobody can tell apart from an unknown.
+	rows := 0
+	for _, f := range in.Meta {
+		if strings.TrimSpace(f.Value) == "" {
+			continue
+		}
+		if rows == 0 {
+			b.WriteString("| | |\n| --- | --- |\n")
+		}
+		fmt.Fprintf(&b, "| **%s** | %s |\n", f.Label, strings.ReplaceAll(f.Value, "|", "\\|"))
+		rows++
+	}
+	if rows > 0 {
+		b.WriteString("\n")
+	}
+	b.WriteString("---\n\n")
 
 	for _, m := range in.Messages {
 		author := "unknown"
@@ -109,15 +138,19 @@ func renderIssueBody(in renderInput) string {
 			b.WriteString(quote(m.Content) + "\n")
 		}
 		for _, a := range m.Attachments {
-			attachments++
 			link := fmt.Sprintf("https://discord.com/channels/%s/%s/%s", in.GuildID, in.ChannelID, m.ID)
+			if permanent := in.Uploads[a.URL]; permanent != "" {
+				fmt.Fprintf(&b, "> ![%s](%s)\n", a.Filename, permanent)
+				continue
+			}
+			attachments++
 			fmt.Fprintf(&b, "> 📎 [%s](%s) · [view in Discord](%s)\n", a.Filename, a.URL, link)
 		}
 		b.WriteString("\n")
 	}
 
 	if attachments > 0 {
-		fmt.Fprintf(&b, "---\n\n> **Note:** Discord attachment links are signed and expire after roughly 24 hours. Use the thread link above to reach the %d attached file(s) afterwards.\n", attachments)
+		fmt.Fprintf(&b, "---\n\n> **Note:** %d file(s) are still Discord links, which are signed and expire after roughly 24 hours. Images were copied out; use the thread link above for the rest.\n", attachments)
 	}
 
 	body := b.String()

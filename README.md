@@ -167,6 +167,16 @@ reply is ephemeral; the issue link is posted once into the thread.
 - **Long threads are truncated** below GitHub's 65536-character body limit, with a
   pointer back to Discord.
 
+A modal opens first with five optional fields -- script name, OS and version,
+Proxmox version, a short summary, and notes. Whatever the helper fills in becomes
+a small table above the thread; blanks are left out. Five is Discord's limit for
+a modal, so the fields cover what a thread rarely states in a structured way, not
+the whole bug template.
+
+Images are copied into the `issue_attachments` collection and embedded from
+there, because Discord's attachment links are signed and expire after about a
+day. Other files stay as links, so logs and archives do not fill the database.
+
 ### Setup
 
 1. *Discord application* — enable the **Message Content** intent, invite with the `bot`
