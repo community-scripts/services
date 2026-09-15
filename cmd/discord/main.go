@@ -105,6 +105,7 @@ func main() {
 	session.Identify.Intents = discordgo.IntentsGuilds | discordgo.IntentsGuildMessages | discordgo.IntentMessageContent
 
 	session.AddHandler(b.onReady)
+	session.AddHandler(b.onGuildCreate)
 	session.AddHandler(b.onInteraction)
 
 	if err := session.Open(); err != nil {
@@ -120,19 +121,30 @@ func main() {
 
 // Guild-scoped registration applies immediately, unlike global commands which
 // take up to an hour to propagate.
-func (b *bot) onReady(s *discordgo.Session, r *discordgo.Ready) {
+func registerCommand(s *discordgo.Session, appID, guildID string) {
 	permissions := int64(discordgo.PermissionManageMessages)
 	command := &discordgo.ApplicationCommand{
 		Name:                     commandName,
 		Type:                     discordgo.MessageApplicationCommand,
 		DefaultMemberPermissions: &permissions,
 	}
+	if _, err := s.ApplicationCommandCreate(appID, guildID, command); err != nil {
+		log.Printf("discord bot: register command in guild %s: %v", guildID, err)
+	}
+}
+
+func (b *bot) onReady(s *discordgo.Session, r *discordgo.Ready) {
 	for _, guild := range r.Guilds {
-		if _, err := s.ApplicationCommandCreate(r.User.ID, guild.ID, command); err != nil {
-			log.Printf("discord bot: register command in guild %s: %v", guild.ID, err)
-		}
+		registerCommand(s, r.User.ID, guild.ID)
 	}
 	log.Printf("discord bot: ready as %s, %d guild(s)", r.User.String(), len(r.Guilds))
+}
+
+// Ready only lists guilds the bot was already in. Without this, being invited
+// while it runs leaves the command unregistered until the next restart.
+func (b *bot) onGuildCreate(s *discordgo.Session, g *discordgo.GuildCreate) {
+	registerCommand(s, s.State.User.ID, g.ID)
+	log.Printf("discord bot: joined guild %s (%s)", g.Name, g.ID)
 }
 
 func (b *bot) onInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
