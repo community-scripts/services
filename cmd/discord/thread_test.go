@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -221,14 +222,24 @@ func TestDecodeStringList(t *testing.T) {
 }
 
 func TestNormalisePEM(t *testing.T) {
-	pem := "-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----"
+	const body = "MIIBOgIBAAJBAKj34GkxFhD90vcNLYLInFEX6Ppy1tPf9Cnzj4p4WGeKLs1Pt8Qu"
+	want := "-----BEGIN RSA PRIVATE KEY-----\n" + body + "\n-----END RSA PRIVATE KEY-----\n"
+	plain := want
 
-	if got := normalisePEM(strings.ReplaceAll(pem, "\n", "\\n")); got != pem {
-		t.Errorf("escaped newlines should be restored, got %q", got)
+	// However the value survives an env field, the same PEM has to come out.
+	for name, in := range map[string]string{
+		"plain":            plain,
+		"escaped newlines": strings.ReplaceAll(plain, "\n", `\n`),
+		"spaces":           strings.ReplaceAll(plain, "\n", " "),
+		"no separators":    strings.ReplaceAll(plain, "\n", ""),
+		"crlf":             strings.ReplaceAll(plain, "\n", "\r\n"),
+		"base64":           base64.StdEncoding.EncodeToString([]byte(plain)),
+	} {
+		if got := normalisePEM(in); got != want {
+			t.Errorf("%s: got %q, want %q", name, got, want)
+		}
 	}
-	if got := normalisePEM("LS0tLS1CRUdJTiBSU0EgUFJJVkFURSBLRVktLS0tLQo="); !strings.Contains(got, "BEGIN RSA PRIVATE KEY") {
-		t.Errorf("base64 should be decoded, got %q", got)
-	}
+
 	if got := normalisePEM(""); got != "" {
 		t.Errorf("empty stays empty, got %q", got)
 	}

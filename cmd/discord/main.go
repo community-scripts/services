@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -62,26 +63,53 @@ func loadConfig() (appConfig, error) {
 }
 
 // Env files mangle the newlines in a PEM, so a base64 blob is accepted too.
-func normalisePEM(raw string) string {
-	if raw == "" {
-		return ""
-	}
-	if strings.Contains(raw, "BEGIN") {
-		return strings.ReplaceAll(raw, "\\n", "\n")
-	}
-	// base64 wraps at 76 columns by default and env fields pick up stray
-	// newlines, neither of which DecodeString tolerates.
-	compact := strings.Map(func(r rune) rune {
+func stripSpace(s string) string {
+	return strings.Map(func(r rune) rune {
 		if unicode.IsSpace(r) {
 			return -1
 		}
 		return r
-	}, raw)
-	decoded, err := base64.StdEncoding.DecodeString(compact)
-	if err != nil {
-		return raw
+	}, s)
+}
+
+var pemBlock = regexp.MustCompile(`(?s)-----BEGIN ([A-Z0-9 ]+?)-----(.*?)-----END [A-Z0-9 ]+?-----`)
+
+// Rebuild the block from its base64 body, so however the value survived its trip
+// through an env field -- real newlines, literal backslash-n, spaces, or no
+// separators at all -- it comes out as PEM that pem.Decode accepts.
+func rebuildPEM(s string) string {
+	m := pemBlock.FindStringSubmatch(s)
+	if m == nil {
+		return s
 	}
-	return string(decoded)
+	label, body := strings.TrimSpace(m[1]), stripSpace(m[2])
+
+	var b strings.Builder
+	b.WriteString("-----BEGIN " + label + "-----\n")
+	for i := 0; i < len(body); i += 64 {
+		j := i + 64
+		if j > len(body) {
+			j = len(body)
+		}
+		b.WriteString(body[i:j] + "\n")
+	}
+	b.WriteString("-----END " + label + "-----\n")
+	return b.String()
+}
+
+func normalisePEM(raw string) string {
+	raw = strings.TrimSpace(strings.ReplaceAll(raw, `\n`, "\n"))
+	if raw == "" {
+		return ""
+	}
+	if !strings.Contains(raw, "-----BEGIN") {
+		decoded, err := base64.StdEncoding.DecodeString(stripSpace(raw))
+		if err != nil {
+			return raw
+		}
+		raw = string(decoded)
+	}
+	return rebuildPEM(raw)
 }
 
 type bot struct {
