@@ -1508,35 +1508,88 @@ func (ch *CHClient) FetchErrorAnalysisData(ctx context.Context, days int, repoSo
 		}
 	}
 
-	// App errors (excludes user_aborted)
+	// App errors. Counted here, described by the pass below: the exit code, the
+	// error text and the category have to come from the same group of runs.
+	// Taking each with its own aggregate -- the mode for the code, an arbitrary
+	// row for the text -- put an error next to an exit code it never had, and
+	// the "file an issue" button repeated the pair into GitHub.
+	//
+	// Aborted matches the per-script page (status='aborted' plus the failures
+	// the engine files as user_aborted); counting only the former left the
+	// column reading 0 for every app.
 	aw, aa := chWhere(days, repoSource, repoSlug, platform, "status IN ('success','failed','aborted','unknown')")
 	if rows, err := ch.db.QueryContext(ctx, fmt.Sprintf(`
 		SELECT nsapp, anyLast(type), count() t,
 			countIf(status='failed' AND error_category!='user_aborted') f,
-			countIf(status='aborted' AND error_category!='user_aborted') ab,
-			topKIf(1)(exit_code, status='failed' AND error_category!='user_aborted' AND exit_code!=0) topec,
-			anyIf(error, status='failed' AND error_category!='user_aborted' AND error!='') toperr,
-			anyIf(error_category, status='failed' AND error_category NOT IN ('','uncategorized','user_aborted')) topcat
+			countIf(status='aborted' OR (status='failed' AND error_category='user_aborted')) ab
 		FROM telemetry_db.telemetry WHERE %s AND nsapp!=''
 		GROUP BY nsapp
-		HAVING f+ab > 0
+		HAVING f > 0
 		ORDER BY f DESC LIMIT 50`, aw), aa...); err == nil {
 		defer rows.Close()
 		for rows.Next() {
 			var ae AppErrorDetail
 			var t, f, ab uint64
-			var topEC []int16
-			if rows.Scan(&ae.App, &ae.Type, &t, &f, &ab, &topEC, &ae.TopError, &ae.TopCategory) == nil {
+			if rows.Scan(&ae.App, &ae.Type, &t, &f, &ab) == nil {
 				ae.TotalCount = int(t)
 				ae.FailedCount = int(f)
 				ae.AbortedCount = int(ab)
-				if t > 0 {
-					ae.FailureRate = float64(f) / float64(t) * 100
-				}
-				if len(topEC) > 0 {
-					ae.TopExitCode = int(topEC[0])
+				// Someone backing out is not a failure, and leaving those in
+				// the denominator made a script people cancel a lot look more
+				// reliable than one nobody cancels. Same basis as the alert
+				// mail's success rate.
+				if t > ab {
+					ae.FailureRate = float64(f) / float64(t-ab) * 100
 				}
 				data.AppErrors = append(data.AppErrors, ae)
+			}
+		}
+	}
+
+	if len(data.AppErrors) > 0 {
+		type dominantFailure struct {
+			exitCode int
+			error    string
+			category string
+		}
+		byApp := make(map[string]dominantFailure, len(data.AppErrors))
+
+		// Group each app's failures by exit code, then keep the largest group
+		// whole. argMax reads "the value from the row with the highest n".
+		dw, da := chWhere(days, repoSource, repoSlug, platform,
+			"status='failed'", "error_category!='user_aborted'", "exit_code!=0", "nsapp!=''")
+		rows, err := ch.db.QueryContext(ctx, fmt.Sprintf(`
+			SELECT nsapp, argMax(ec, n), argMax(err, n), argMax(cat, n)
+			FROM (
+				SELECT nsapp, exit_code AS ec, count() AS n,
+					anyIf(error, error!='') AS err,
+					anyIf(error_category, error_category NOT IN ('','uncategorized')) AS cat
+				FROM telemetry_db.telemetry WHERE %s
+				GROUP BY nsapp, exit_code
+			)
+			GROUP BY nsapp`, dw), da...)
+		if err != nil {
+			// Silently skipping would leave the exit code and error columns
+			// empty across the table with nothing saying why.
+			log.Printf("[CH] app dominant-failure query: %v", err)
+		} else {
+			defer rows.Close()
+			for rows.Next() {
+				var app string
+				var ec int16
+				var d dominantFailure
+				if rows.Scan(&app, &ec, &d.error, &d.category) == nil {
+					d.exitCode = int(ec)
+					byApp[app] = d
+				}
+			}
+		}
+
+		for i := range data.AppErrors {
+			if d, ok := byApp[data.AppErrors[i].App]; ok {
+				data.AppErrors[i].TopExitCode = d.exitCode
+				data.AppErrors[i].TopError = d.error
+				data.AppErrors[i].TopCategory = d.category
 			}
 		}
 	}

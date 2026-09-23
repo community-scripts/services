@@ -216,10 +216,10 @@
                             <th>Type</th>
                             <th>Total</th>
                             <th>Failed</th>
-                            <th>Aborted</th>
-                            <th>Fail Rate</th>
-                            <th>Top Exit Code</th>
-                            <th>Top Error</th>
+                            <th title="Runs the operator cancelled. Not counted as failures.">Aborted</th>
+                            <th title="Failed / (Total - Aborted). A cancelled run is not a failed one.">Fail Rate</th>
+                            <th title="The exit code this script fails with most often.">Top Exit Code</th>
+                            <th title="An error from that same exit code, not from some other run.">Top Error</th>
                             <th>Actions</th>
                         </tr>
                     </thead>
