@@ -1655,7 +1655,9 @@ func (ch *CHClient) FetchErrorAnalysisData(ctx context.Context, days int, repoSo
 			topK(1)(exit_code) tec,
 			arrayStringConcat(arraySlice(groupUniqArray(nsapp),1,5),', ') apps
 		FROM telemetry_db.telemetry
-		WHERE %s AND cmd != '' AND cmd != 'unknown' AND NOT match(cmd, '^return [0-9]+$')
+		-- return is how a failure is passed up, not what broke.
+		WHERE %s AND cmd != '' AND cmd != 'unknown'
+			AND NOT (cmd = 'return' OR startsWith(cmd, 'return '))
 		GROUP BY cmd ORDER BY c DESC LIMIT 20`, sigW), sigA...); err == nil {
 		defer rows.Close()
 		for rows.Next() {
