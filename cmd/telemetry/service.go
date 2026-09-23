@@ -331,7 +331,7 @@ func (wq *WriteQueue) worker(id int) {
 				// Exponential backoff: 1s, 2s, 4s
 				backoff := time.Duration(1<<uint(item.Attempt)) * time.Second
 				time.Sleep(backoff)
-				// Re-enqueue for retry (non-blocking â€” drop if queue full)
+				// Re-enqueue for retry (non-blocking — drop if queue full)
 				select {
 				case wq.ch <- item:
 				default:
@@ -357,7 +357,7 @@ func isTerminalStatus(status string) bool {
 }
 
 // processItem performs the ClickHouse INSERT.
-// Every event is a new row in ClickHouse (append-only). There is no find+update â€” every event is a new row.
+// Every event is a new row in ClickHouse (append-only). There is no find+update — every event is a new row.
 //
 // Deduplication strategy (prevents the over-counting that inflates failure rates):
 //   - "installing": only the first event per execution_id is written.
@@ -385,11 +385,11 @@ func (wq *WriteQueue) processItem(ctx context.Context, item WriteItem) error {
 		terminalMarked = true
 		// In-memory miss: also check the DB (covers process restarts / multi-instance).
 		if has, err := wq.client.HasTerminalExecutionID(ctx, payload.ExecutionID); err == nil && has {
-			return nil // a terminal row already exists in ClickHouse â€” keep it marked
+			return nil // a terminal row already exists in ClickHouse — keep it marked
 		}
 	}
 
-	// INSERT into ClickHouse (all events â€” installing, configuring, success, failed, etc.)
+	// INSERT into ClickHouse (all events — installing, configuring, success, failed, etc.)
 	if err := wq.client.InsertTelemetry(ctx, payload); err != nil {
 		// Roll back the terminal mark so a retry can still write the row.
 		if terminalMarked {
@@ -656,59 +656,98 @@ var (
 	}
 
 	// exitCodeInfo consolidates description and category for all known exit codes.
-	// This is the single source of truth â€” dashboard.go and all other code should
-	// use getExitCodeDescription() / getExitCodeCategory() instead of duplicating.
+	// Within this service it is the single source of truth — use
+	// getExitCodeDescription() / getExitCodeCategory() instead of duplicating.
+	//
+	// The descriptions mirror explain_exit_code() in community-scripts/core
+	// (api/exitcodes.func), so the dashboard names a failure the same way the
+	// script did. The categories are this service's own and deliberately finer
+	// than the engine's: exit 1 stays "unknown" so deriveErrorCategory() can
+	// decide from the evidence in the error text, and 100/101 split into apt
+	// and build. Syncing those from the engine breaks errorcategory_test.go,
+	// which is there to say so.
 	exitCodeInfo = map[int]struct {
 		Desc     string
 		Category string
 	}{
 		// --- Generic / Shell ---
-		0: {"Success", ""},
-		1: {"General error", "unknown"},
-		2: {"Misuse of shell builtins", "unknown"},
-		3: {"General syntax or argument error", "unknown"},
-
-		// --- curl / wget ---
-		4:  {"curl: Feature not supported or protocol error", "network"},
-		5:  {"curl: Could not resolve proxy", "network"},
-		6:  {"curl: DNS resolution failed", "network"},
-		7:  {"curl: Connection refused / host down", "network"},
-		8:  {"curl: Server reply error", "network"},
+		0:  {"Cancelled before completion (no error)", ""},
+		1:  {"General error / Operation not permitted", "unknown"},
+		2:  {"Misuse of shell builtins (e.g. syntax error)", "unknown"},
+		3:  {"General syntax or argument error", "unknown"},
+		10: {"Docker / privileged mode required (unsupported environment)", "config"},
+		// --- curl / wget errors ---
+		4:  {"curl: Feature not supported or protocol error", "unknown"},
+		5:  {"curl: Could not resolve proxy", "unknown"},
+		6:  {"curl: DNS resolution failed (could not resolve host)", "network"},
+		7:  {"curl: Failed to connect (network unreachable / host down)", "network"},
+		8:  {"curl: Server reply error (FTP/SFTP or apk untrusted key)", "unknown"},
 		16: {"curl: HTTP/2 framing layer error", "network"},
-		18: {"curl: Partial file (transfer incomplete)", "network"},
-		22: {"curl: HTTP error (404/500 etc.)", "network"},
-		23: {"curl: Write error (disk full?)", "storage"},
+		18: {"curl: Partial file (transfer not completed)", "network"},
+		22: {"curl: HTTP error returned (404, 429, 500+)", "network"},
+		23: {"curl: Write error (disk full or permissions)", "storage"},
 		24: {"curl: Write to local file failed", "storage"},
 		25: {"curl: Upload failed", "network"},
 		26: {"curl: Read error on local file (I/O)", "storage"},
-		27: {"curl: Out of memory", "resource"},
-		28: {"curl: Connection timed out", "timeout"},
+		27: {"curl: Out of memory (memory allocation failed)", "resource"},
+		28: {"curl: Operation timeout (network slow or server not responding)", "timeout"},
 		30: {"curl: FTP port command failed", "network"},
 		32: {"curl: FTP SIZE command failed", "network"},
 		33: {"curl: HTTP range error", "network"},
 		34: {"curl: HTTP post error", "network"},
-		35: {"curl: SSL/TLS handshake failed", "network"},
+		35: {"curl: SSL/TLS handshake failed (certificate error)", "network"},
 		36: {"curl: FTP bad download resume", "network"},
+		39: {"curl: LDAP search failed", "unknown"},
+		44: {"curl: Internal error (bad function call order)", "unknown"},
+		45: {"curl: Interface error (failed to bind to specified interface)", "unknown"},
+		46: {"curl: Bad password entered", "unknown"},
 		47: {"curl: Too many redirects", "network"},
-		51: {"curl: SSL peer certificate verification failed", "network"},
-		52: {"curl: Empty reply from server", "network"},
+		48: {"curl: Unknown command line option specified", "unknown"},
+		51: {"curl: SSL peer certificate or SSH host key verification failed", "network"},
+		52: {"curl: Empty reply from server (got nothing)", "network"},
 		55: {"curl: Failed sending network data", "network"},
-		56: {"curl: Receive error (connection reset)", "network"},
+		56: {"curl: Receive error (connection reset by peer)", "network"},
+		57: {"curl: Unrecoverable poll/select error (system I/O failure)", "unknown"},
 		59: {"curl: Couldn't use specified SSL cipher", "network"},
+		61: {"curl: Bad/unrecognized transfer encoding", "unknown"},
+		63: {"curl: Maximum file size exceeded", "unknown"},
 		75: {"Temporary failure (retry later)", "network"},
-		78: {"curl: Remote file not found (404)", "network"},
-		92: {"curl: HTTP/2 stream error", "network"},
+		78: {"curl: Remote file not found (404 on FTP/file)", "network"},
+		79: {"curl: SSH session error (key exchange/auth failed)", "unknown"},
+		92: {"curl: HTTP/2 stream error (protocol violation)", "network"},
 		95: {"curl: HTTP/3 layer error", "network"},
-
-		// --- Docker / Privileged ---
-		10: {"Docker / privileged mode required", "config"},
-
+		// --- Package manager / APT / DPKG ---
+		100: {"APT: Package manager error (broken packages / dependency problems)", "apt"},
+		101: {"APT: Configuration error (bad sources.list, malformed config)", "unknown"},
+		102: {"APT: Lock held by another process (dpkg/apt still running)", "apt"},
+		// --- Script Validation & Setup (103-123) ---
+		103: {"Validation: Shell is not Bash", "preflight"},
+		104: {"Validation: Not running as root (or invoked via sudo)", "preflight"},
+		105: {"Validation: Proxmox VE version not supported", "preflight"},
+		106: {"Validation: Unsupported architecture (requires amd64 or arm64)", "preflight"},
+		107: {"Validation: Kernel key parameters unreadable", "preflight"},
+		108: {"Validation: Kernel key limits exceeded", "preflight"},
+		109: {"Proxmox: No available container ID after max attempts", "proxmox"},
+		110: {"Proxmox: Failed to apply default.vars", "proxmox"},
+		111: {"Proxmox: App defaults file not available", "proxmox"},
+		112: {"Proxmox: Invalid install menu option", "config"},
+		113: {"LXC: Under-provisioned — user aborted update", "user_aborted"},
+		114: {"LXC: Storage too low — user aborted update", "user_aborted"},
+		115: {"Download: install.func download failed or incomplete", "network"},
+		116: {"Proxmox: Default bridge vmbr0 not found", "config"},
+		117: {"LXC: Container did not reach running state", "proxmox"},
+		118: {"LXC: No IP assigned to container after timeout", "timeout"},
+		119: {"Proxmox: No valid storage for rootdir content", "storage"},
+		120: {"Proxmox: No valid storage for vztmpl content", "storage"},
+		121: {"LXC: Container network not ready (no IP after retries)", "network"},
+		122: {"LXC: No internet connectivity — user declined to continue", "user_aborted"},
+		123: {"LXC: Local IP detection failed", "network"},
 		// --- BSD sysexits.h (64-78) ---
 		64: {"Usage error (wrong arguments)", "config"},
 		65: {"Data format error (bad input data)", "unknown"},
-		66: {"Input file not found", "unknown"},
-		67: {"User not found", "unknown"},
-		68: {"Host not found", "network"},
+		66: {"Input file not found (cannot open input)", "unknown"},
+		67: {"User not found (addressee unknown)", "unknown"},
+		68: {"Host not found (hostname unknown)", "network"},
 		69: {"Service unavailable", "service"},
 		70: {"Internal software error", "unknown"},
 		71: {"System error (OS-level failure)", "unknown"},
@@ -717,108 +756,70 @@ var (
 		74: {"I/O error", "storage"},
 		76: {"Remote protocol error", "network"},
 		77: {"Permission denied", "permission"},
-
-		// --- APT / DPKG ---
-		100: {"APT: Package manager error (broken packages)", "apt"},
-		// Not apt. apt reports its problems as 100; 101 is what cargo returns for
-		// any failure at all, and in fourteen days of data every single exit-101
-		// signature was a Rust build -- scanopy 48, vaultwarden 27, oxicloud 25,
-		// a hundred of the hundred and twenty. Calling that "APT: Configuration
-		// error (bad sources)" sent people to look at sources.list for a
-		// compiler error. Left to the evidence below, like exit 1.
-		101: {"Build or configuration error", "unknown"},
-		102: {"APT: Lock held by another process", "apt"},
-
-		// --- Script Validation & Setup (103-123) ---
-		103: {"Validation: Shell is not Bash", "preflight"},
-		104: {"Validation: Not running as root", "preflight"},
-		105: {"Validation: PVE version not supported", "preflight"},
-		106: {"Validation: Architecture not supported (ARM/PiMox)", "preflight"},
-		107: {"Validation: Kernel key parameters unreadable", "preflight"},
-		108: {"Validation: Kernel key limits exceeded", "preflight"},
-		109: {"Proxmox: No available container ID", "proxmox"},
-		110: {"Proxmox: Failed to apply default.vars", "proxmox"},
-		111: {"Proxmox: App defaults file not available", "proxmox"},
-		112: {"Proxmox: Invalid install menu option", "config"},
-		113: {"LXC: Under-provisioned â€” user aborted", "user_aborted"},
-		114: {"LXC: Storage too low â€” user aborted", "user_aborted"},
-		115: {"Download: install.func failed or incomplete", "network"},
-		116: {"Proxmox: Default bridge vmbr0 not found", "config"},
-		117: {"LXC: Container did not reach running state", "proxmox"},
-		118: {"LXC: No IP assigned after timeout", "timeout"},
-		119: {"Proxmox: No valid storage for rootdir", "storage"},
-		120: {"Proxmox: No valid storage for vztmpl", "storage"},
-		121: {"LXC: Container network not ready", "network"},
-		122: {"LXC: No internet â€” user declined", "user_aborted"},
-		123: {"LXC: Local IP detection failed", "network"},
-
 		// --- Common shell/system errors ---
-		124: {"Command timed out", "timeout"},
-		125: {"Docker daemon error / command failed to start", "config"},
-		126: {"Command cannot execute (permission problem)", "permission"},
+		124: {"Command timed out (timeout command)", "timeout"},
+		125: {"Command failed to start (Docker daemon or execution error)", "config"},
+		126: {"Command invoked cannot execute (permission problem?)", "permission"},
 		127: {"Command not found", "command_not_found"},
 		128: {"Invalid argument to exit", "signal"},
-		129: {"Killed by SIGHUP (terminal closed)", "user_aborted"},
-		130: {"Script terminated by Ctrl+C (SIGINT)", "user_aborted"},
-		131: {"Killed by SIGQUIT (core dump)", "signal"},
-		132: {"Killed by SIGILL (illegal instruction)", "signal"},
-		134: {"Process aborted (SIGABRT)", "signal"},
-		137: {"Process killed (SIGKILL) â€” likely OOM", "resource"},
-		139: {"Segmentation fault (SIGSEGV)", "unknown"},
-		141: {"Broken pipe (SIGPIPE)", "signal"},
-		143: {"Process terminated (SIGTERM)", "signal"},
-		144: {"Killed by signal 16 (SIGUSR1/SIGSTKFLT)", "signal"},
+		129: {"Killed by SIGHUP (terminal closed / hangup)", "user_aborted"},
+		130: {"Aborted by user (SIGINT)", "user_aborted"},
+		131: {"Killed by SIGQUIT (core dumped)", "signal"},
+		132: {"Killed by SIGILL (illegal CPU instruction)", "signal"},
+		134: {"Process aborted (SIGABRT - possibly Node.js heap overflow)", "signal"},
+		137: {"Killed (SIGKILL / Out of memory?)", "resource"},
+		139: {"Segmentation fault (core dumped)", "unknown"},
+		141: {"Broken pipe (SIGPIPE - output closed prematurely)", "signal"},
+		143: {"Terminated (SIGTERM)", "signal"},
+		144: {"Killed by signal 16 (SIGUSR1 / SIGSTKFLT)", "signal"},
 		146: {"Killed by signal 18 (SIGTSTP)", "signal"},
-
 		// --- Systemd / Service errors (150-154) ---
 		150: {"Systemd: Service failed to start", "service"},
 		151: {"Systemd: Service unit not found", "service"},
 		152: {"Permission denied (EACCES)", "permission"},
 		153: {"Build/compile failed (make/gcc/cmake)", "build"},
 		154: {"Node.js: Native addon build failed (node-gyp)", "build"},
-
 		// --- Python / pip / uv (160-162) ---
-		160: {"Python: Virtualenv/uv environment missing or broken", "dependency"},
+		160: {"Python: Virtualenv / uv environment missing or broken", "dependency"},
 		161: {"Python: Dependency resolution failed", "dependency"},
-		162: {"Python: Installation aborted (EXTERNALLY-MANAGED)", "dependency"},
-
+		162: {"Python: Installation aborted (permissions or EXTERNALLY-MANAGED)", "dependency"},
 		// --- PostgreSQL (170-173) ---
-		170: {"PostgreSQL: Connection failed", "database"},
-		171: {"PostgreSQL: Authentication failed", "database"},
+		170: {"PostgreSQL: Connection failed (server not running / wrong socket)", "database"},
+		171: {"PostgreSQL: Authentication failed (bad user/password)", "database"},
 		172: {"PostgreSQL: Database does not exist", "database"},
-		173: {"PostgreSQL: Fatal error in query", "database"},
-
+		173: {"PostgreSQL: Fatal error in query / syntax", "database"},
 		// --- MySQL / MariaDB (180-183) ---
-		180: {"MySQL/MariaDB: Connection failed", "database"},
-		181: {"MySQL/MariaDB: Authentication failed", "database"},
+		180: {"MySQL/MariaDB: Connection failed (server not running / wrong socket)", "database"},
+		181: {"MySQL/MariaDB: Authentication failed (bad user/password)", "database"},
 		182: {"MySQL/MariaDB: Database does not exist", "database"},
-		183: {"MySQL/MariaDB: Fatal error in query", "database"},
-
+		183: {"MySQL/MariaDB: Fatal error in query / syntax", "database"},
 		// --- MongoDB (190-193) ---
-		190: {"MongoDB: Connection failed", "database"},
-		191: {"MongoDB: Authentication failed", "database"},
+		190: {"MongoDB: Connection failed (server not running)", "database"},
+		191: {"MongoDB: Authentication failed (bad user/password)", "database"},
 		192: {"MongoDB: Database not found", "database"},
 		193: {"MongoDB: Fatal query error", "database"},
-
+		// --- Engine (199) ---
+		199: {"Engine: exit code not reported", "unknown"},
 		// --- Proxmox Custom Codes (200-231) ---
 		200: {"Proxmox: Failed to create lock file", "proxmox"},
 		203: {"Proxmox: Missing CTID variable", "config"},
 		204: {"Proxmox: Missing PCT_OSTYPE variable", "config"},
 		205: {"Proxmox: Invalid CTID (<100)", "config"},
 		206: {"Proxmox: CTID already in use", "config"},
-		207: {"Proxmox: Password contains unescaped special chars", "config"},
-		208: {"Proxmox: Invalid configuration (DNS/MAC/Network)", "config"},
+		207: {"Proxmox: Password contains unescaped special characters", "config"},
+		208: {"Proxmox: Invalid configuration (DNS/MAC/Network format)", "config"},
 		209: {"Proxmox: Container creation failed", "proxmox"},
 		210: {"Proxmox: Cluster not quorate", "proxmox"},
 		211: {"Proxmox: Timeout waiting for template lock", "timeout"},
-		212: {"Proxmox: Storage 'iscsidirect' does not support containers", "proxmox"},
-		213: {"Proxmox: Storage does not support 'rootdir' content", "proxmox"},
+		212: {"Proxmox: Storage type 'iscsidirect' does not support containers (VMs only)", "proxmox"},
+		213: {"Proxmox: Storage type does not support 'rootdir' content", "proxmox"},
 		214: {"Proxmox: Not enough storage space", "storage"},
 		215: {"Proxmox: Container created but not listed (ghost state)", "proxmox"},
+		227: {"Proxmox: Container created but failed to start", "proxmox"},
 		216: {"Proxmox: RootFS entry missing in config", "proxmox"},
 		217: {"Proxmox: Storage not accessible", "storage"},
 		218: {"Proxmox: Template file corrupted or incomplete", "proxmox"},
-		219: {"Proxmox: CephFS does not support containers", "storage"},
+		219: {"Proxmox: CephFS does not support containers - use RBD", "storage"},
 		220: {"Proxmox: Unable to resolve template path", "proxmox"},
 		221: {"Proxmox: Template file not readable", "proxmox"},
 		222: {"Proxmox: Template download failed", "proxmox"},
@@ -827,34 +828,31 @@ var (
 		225: {"Proxmox: No template available for OS/Version", "proxmox"},
 		226: {"Proxmox: VM disk import or post-creation setup failed", "proxmox"},
 		231: {"Proxmox: LXC stack upgrade failed", "proxmox"},
-
 		// --- Tools & Addon Scripts (232-238) ---
-		232: {"Tools: Wrong execution environment", "config"},
+		232: {"Tools: Wrong execution environment (run on PVE host, not inside LXC)", "config"},
 		233: {"Tools: Application not installed (update prerequisite missing)", "config"},
-		234: {"Tools: No LXC containers found", "proxmox"},
+		234: {"Tools: No LXC containers found or available", "proxmox"},
 		235: {"Tools: Backup or restore operation failed", "storage"},
 		236: {"Tools: Required hardware not detected", "config"},
 		237: {"Tools: Dependency package installation failed", "dependency"},
-		238: {"Tools: OS or distribution not supported", "config"},
-
-		// --- Node.js / npm (239-249) ---
-		239: {"npm/Node.js: Unexpected runtime error", "dependency"},
-		243: {"Node.js: Out of memory (heap overflow)", "resource"},
+		238: {"Tools: OS or distribution not supported for this addon", "config"},
+		// --- Node.js / npm / pnpm / yarn (239-249) ---
+		239: {"npm/Node.js: Unexpected runtime error or dependency failure", "dependency"},
+		243: {"Node.js: Out of memory (JavaScript heap out of memory)", "resource"},
 		245: {"Node.js: Invalid command-line option", "config"},
 		246: {"Node.js: Internal JavaScript Parse Error", "unknown"},
 		247: {"Node.js: Fatal internal error", "unknown"},
 		248: {"Node.js: Invalid C++ addon / N-API failure", "unknown"},
 		249: {"npm/pnpm/yarn: Unknown fatal error", "unknown"},
-
 		// --- Application Install/Update Errors (250-254) ---
 		250: {"App: Download failed or version not determined", "network"},
-		251: {"App: File extraction failed (corrupt/incomplete)", "storage"},
+		251: {"App: File extraction failed (corrupt or incomplete archive)", "storage"},
 		252: {"App: Required file or resource not found", "unknown"},
-		253: {"App: Data migration required â€” update aborted", "config"},
+		253: {"App: Data migration required — update aborted", "config"},
 		254: {"App: User declined prompt or input timed out", "user_aborted"},
-
 		// --- DPKG ---
-		255: {"DPKG: Fatal internal error / set -e triggered", "apt"},
+		255: {"DPKG: Fatal internal error", "apt"},
+		// --- Default ---
 	}
 )
 
@@ -1069,7 +1067,7 @@ var numericFieldSuffixRe = regexp.MustCompile(`("(?:disk_size|core_count|ram_siz
 var hexEscapeRe = regexp.MustCompile(`\\x([0-9A-Fa-f]{2})`)
 
 // sanitizeRawJSON attempts to fix common JSON encoding issues from bash clients.
-// Called only when the initial json.Decode fails â€” this is a best-effort rescue.
+// Called only when the initial json.Decode fails — this is a best-effort rescue.
 func sanitizeRawJSON(raw []byte) []byte {
 	// 1. Strip unit suffixes from numeric fields: "disk_size": 32G â†’ "disk_size": 32
 	raw = numericFieldSuffixRe.ReplaceAll(raw, []byte("${1}${2}"))
@@ -2431,7 +2429,7 @@ func main() {
 
 		// Lenient JSON decode: ignore unknown fields for forward compatibility.
 		// When api.func adds new fields before the server is updated, requests
-		// must not be rejected â€” otherwise ALL telemetry is lost until deploy.
+		// must not be rejected — otherwise ALL telemetry is lost until deploy.
 		var in TelemetryIn
 		dec := json.NewDecoder(bytes.NewReader(raw))
 		if err := dec.Decode(&in); err != nil {
@@ -2470,7 +2468,7 @@ func main() {
 			return
 		}
 
-		// Auto-reclassify: exit_code=0 is NEVER an error â€” always reclassify as success
+		// Auto-reclassify: exit_code=0 is NEVER an error — always reclassify as success
 		if in.Status == "failed" && in.ExitCode == 0 {
 			in.Status = "success"
 			in.Error = ""
@@ -2845,7 +2843,7 @@ func warmupCaches(ch *CHClient, cache *Cache, cfg Config, todayOnly bool) {
 				time.Sleep(1 * time.Second)
 			}
 
-			// --- Scripts (only for today â€” PB SQL collections handle 7d/30d/alltime) ---
+			// --- Scripts (only for today — PB SQL collections handle 7d/30d/alltime) ---
 			if days == 1 {
 				cacheKey := fmt.Sprintf("scripts:%d:%s", days, repo)
 				if cache.TryStartRefresh(cacheKey) {
@@ -2864,7 +2862,7 @@ func warmupCaches(ch *CHClient, cache *Cache, cfg Config, todayOnly bool) {
 				time.Sleep(1 * time.Second)
 			}
 
-			// --- Errors (skip for today-only refresh â€” errors don't change that fast) ---
+			// --- Errors (skip for today-only refresh — errors don't change that fast) ---
 			if !todayOnly {
 				cacheKey := fmt.Sprintf("errors:%d:%s", days, repo)
 				if cache.TryStartRefresh(cacheKey) {
