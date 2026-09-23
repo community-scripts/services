@@ -115,7 +115,7 @@ type TelemetryIn struct {
 	// GPU Passthrough stats
 	GPUVendor      string `json:"gpu_vendor,omitempty"`      // "intel", "amd", "nvidia"
 	GPUModel       string `json:"gpu_model,omitempty"`       // e.g., "Intel Arc Graphics"
-	GPUPassthrough string `json:"gpu_passthrough,omitempty"` // "igpu", "dgpu", "vgpu", "none"
+	GPUPassthrough string `json:"gpu_passthrough,omitempty"` // v1: "igpu"/"dgpu"/"vgpu"/"none"; v2: "yes"/"no"
 
 	// CPU stats
 	CPUVendor string `json:"cpu_vendor,omitempty"` // "intel", "amd", "arm"
@@ -640,8 +640,18 @@ var (
 	// Allowed values for 'gpu_vendor' field
 	allowedGPUVendor = map[string]bool{"intel": true, "amd": true, "nvidia": true, "unknown": true, "": true}
 
-	// Allowed values for 'gpu_passthrough' field
-	allowedGPUPassthrough = map[string]bool{"igpu": true, "dgpu": true, "vgpu": true, "none": true, "unknown": true, "": true}
+	// Allowed values for 'gpu_passthrough' field.
+	//
+	// Payload version 2 redefined this: v1 clients describe what the host has
+	// (igpu/dgpu/vgpu/none), v2 clients whether the guest actually got it
+	// (yes/no). Both are accepted because both are still out there. Rejecting
+	// the v2 vocabulary turned every record from a current client into
+	// "unknown" and filled the log with a warning per request.
+	allowedGPUPassthrough = map[string]bool{
+		"igpu": true, "dgpu": true, "vgpu": true, "none": true, // payload v1
+		"yes": true, "no": true, // payload v2
+		"unknown": true, "": true,
+	}
 
 	// Allowed values for 'cpu_vendor' field
 	allowedCPUVendor = map[string]bool{"intel": true, "amd": true, "arm": true, "apple": true, "qualcomm": true, "unknown": true, "": true}
