@@ -869,6 +869,9 @@ func (ch *CHClient) FetchDashboardData(ctx context.Context, days int, repoSource
 	}
 
 	// ── 9. Failed apps with failure rates ──
+	// Counted over terminal rows, not all of them: ClickHouse keeps one row per
+	// event, so count() was installing+configuring+validation+success as well,
+	// and a script with three runs showed up as eighteen.
 	minInstalls := 10
 	switch {
 	case days <= 1:
@@ -882,7 +885,9 @@ func (ch *CHClient) FetchDashboardData(ctx context.Context, days int, repoSource
 	}
 	if rawAgg {
 		if rows, err := ch.db.QueryContext(ctx, fmt.Sprintf(`
-			SELECT nsapp, anyLast(type), count() t, countIf(status='failed') f
+			SELECT nsapp, anyLast(type),
+				countIf(status IN ('success','failed')) t,
+				countIf(status='failed') f
 			FROM telemetry_db.telemetry
 			WHERE %s AND nsapp!=''
 			GROUP BY nsapp
@@ -903,7 +908,7 @@ func (ch *CHClient) FetchDashboardData(ctx context.Context, days int, repoSource
 			data.FailedApps = buildFailedApps(appTotal, appFailed, 16, minInstalls)
 		}
 	} else if rows, err := ch.db.QueryContext(ctx, fmt.Sprintf(`
-		SELECT nsapp, anyLast(type), sum(total) t, sum(failed) f
+		SELECT nsapp, anyLast(type), sum(success) + sum(failed) t, sum(failed) f
 		FROM telemetry_db.mv_daily_stats
 		WHERE %s AND nsapp!=''
 		GROUP BY nsapp
