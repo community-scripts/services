@@ -1932,7 +1932,7 @@ func (ch *CHClient) FindStuckInstallations(ctx context.Context, stuckHours int) 
 	rows, err := ch.db.QueryContext(ctx, `
 		SELECT id, nsapp, toString(created)
 		FROM telemetry_db.telemetry
-		WHERE status IN ('installing','configuring')
+		WHERE status IN ('installing','validation','configuring')
 		  AND created < now() - INTERVAL ? HOUR
 		  AND (execution_id = '' OR execution_id NOT IN (
 			SELECT execution_id FROM telemetry_db.telemetry
@@ -1954,11 +1954,23 @@ func (ch *CHClient) FindStuckInstallations(ctx context.Context, stuckHours int) 
 
 func (ch *CHClient) MarkRecordAsUnknown(ctx context.Context, record StuckRecord, stuckHours int) error {
 	// Insert a terminal-status row for this record so stats count it properly.
-	// Copy nsapp, type from the original row and set status=unknown.
+	// Everything the original row knew comes along: copying only nsapp and
+	// repo_source left these rows without an OS, resources or a repo slug,
+	// which read as a second, broken kind of record.
 	_, err := ch.db.ExecContext(ctx, `
 		INSERT INTO telemetry_db.telemetry
-			(id, nsapp, type, status, error, error_category, created, execution_id, random_id, repo_source)
-		SELECT ?, nsapp, type, 'unknown', ?, 'timeout', now64(3), execution_id, random_id, repo_source
+			(id, nsapp, type, status, error, error_category, created,
+			 method, core_count, ct_type, disk_size, ram_size,
+			 os_type, os_version, pve_version, execution_id, random_id,
+			 repo_source, repo_slug, cpu_vendor, cpu_model,
+			 gpu_vendor, gpu_model, gpu_passthrough, ram_speed,
+			 install_duration, has_arm)
+		SELECT ?, nsapp, type, 'unknown', ?, 'timeout', now64(3),
+			 method, core_count, ct_type, disk_size, ram_size,
+			 os_type, os_version, pve_version, execution_id, random_id,
+			 repo_source, repo_slug, cpu_vendor, cpu_model,
+			 gpu_vendor, gpu_model, gpu_passthrough, ram_speed,
+			 install_duration, has_arm
 		FROM telemetry_db.telemetry WHERE id = ? LIMIT 1`,
 		generateRecordID(),
 		fmt.Sprintf("Installation timed out - no completion status received after %dh", stuckHours),
@@ -2015,7 +2027,7 @@ func (ch *CHClient) GetStuckCount(ctx context.Context, stuckHours int) (int, err
 	var cnt uint64
 	err := ch.db.QueryRowContext(ctx, `
 		SELECT count() FROM telemetry_db.telemetry
-		WHERE status IN ('installing','configuring')
+		WHERE status IN ('installing','validation','configuring')
 		  AND created < now() - INTERVAL ? HOUR
 		  AND (execution_id = '' OR execution_id NOT IN (
 			SELECT execution_id FROM telemetry_db.telemetry
