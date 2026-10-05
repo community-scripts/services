@@ -821,7 +821,7 @@ var (
 		205: {"Proxmox: Invalid CTID (<100)", "config"},
 		206: {"Proxmox: CTID already in use", "config"},
 		207: {"Proxmox: Password contains unescaped special characters", "config"},
-		208: {"Proxmox: Invalid configuration (DNS/MAC/Network format)", "config"},
+		208: {"Proxmox: Invalid container settings (network, DNS, RAM, password, mounts)", "config"},
 		209: {"Proxmox: Container creation failed", "proxmox"},
 		210: {"Proxmox: Cluster not quorate", "proxmox"},
 		211: {"Proxmox: Timeout waiting for template lock", "timeout"},
@@ -841,7 +841,8 @@ var (
 		224: {"Proxmox: PBS storage is for backups only", "storage"},
 		225: {"Proxmox: No template available for OS/Version", "proxmox"},
 		226: {"Proxmox: VM disk import or post-creation setup failed", "proxmox"},
-		231: {"Proxmox: LXC stack upgrade failed", "proxmox"},
+		228: {"Proxmox: Cluster filesystem /etc/pve not available", "proxmox"},
+		231: {"Proxmox: LXC stack too old for the template, or its upgrade failed", "proxmox"},
 		// --- Tools & Addon Scripts (232-238) ---
 		232: {"Tools: Wrong execution environment (run on PVE host, not inside LXC)", "config"},
 		233: {"Tools: Application not installed (update prerequisite missing)", "config"},
