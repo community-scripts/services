@@ -520,7 +520,7 @@ func (ch *CHClient) FetchNewDashboard(
 				d.MinRuns), 25},
 		{"platform", &d.ByPlatform, "if(plat = '', 'unknown', plat)", "", "runs DESC", 6},
 		{"type", &d.ByType, "if(kind = '', 'unknown', kind)", "", "runs DESC", 10},
-		{"repo", &d.ByRepo, "if(src = '', 'unknown', src)", "", "runs DESC", 10},
+		{"repo", &d.ByRepo, "multiIf(src = '', 'unknown', src = '" + legacyDevSource + "', 'DevScripts', src)", "", "runs DESC", 10},
 		{"repo slug", &d.ByRepoSlug, "slug", "slug != ''", "runs DESC", 15},
 		{"os", &d.ByOS, osExpr, "", "runs DESC", 15},
 		{"host version", &d.ByHostVer, "hostver", "hostver != ''", "runs DESC", 15},

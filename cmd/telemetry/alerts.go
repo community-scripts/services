@@ -166,7 +166,7 @@ func (a *Alerter) maybeSendAlert(rate float64, failed, total int) {
 	}
 
 	// Send alert
-	subject := fmt.Sprintf("[ProxmoxVED Alert] High Failure Rate: %.1f%%", rate)
+	subject := fmt.Sprintf("[Telemetry Alert] High Failure Rate: %.1f%%", rate)
 	body := fmt.Sprintf(`ProxmoxVE Helper Scripts - Telemetry Alert
 
 ⚠️ High installation failure rate detected!
@@ -298,7 +298,7 @@ func (a *Alerter) TestAlert() error {
 		return fmt.Errorf("alerting not configured")
 	}
 
-	subject := "[ProxmoxVED] Test Alert"
+	subject := "[Telemetry] Test Alert"
 	body := fmt.Sprintf(`This is a test alert from ProxmoxVE Helper Scripts telemetry service.
 
 If you received this email, your alert configuration is working correctly.
@@ -371,7 +371,7 @@ func (a *Alerter) SendWeeklyReport() error {
 	}
 
 	// Generate email content
-	subject := fmt.Sprintf("[ProxmoxVED] Weekly Report - Week %d, %d", reportData.CalendarWeek, reportData.Year)
+	subject := fmt.Sprintf("[Telemetry] Weekly Report - Week %d, %d", reportData.CalendarWeek, reportData.Year)
 	body := a.generateWeeklyReportHTML(reportData)
 
 	if err := a.sendHTMLEmail(subject, body); err != nil {

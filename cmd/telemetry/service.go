@@ -131,7 +131,7 @@ type TelemetryIn struct {
 	ErrorCategory string `json:"error_category,omitempty"` // "network", "storage", "dependency", "permission", "timeout", "unknown"
 
 	// Repository source for collection routing
-	RepoSource string `json:"repo_source,omitempty"` // "ProxmoxVE", "ProxmoxVED", or "external"
+	RepoSource string `json:"repo_source,omitempty"` // "ProxmoxVE", "DevScripts", or "external"
 
 	// Dynamic repository slug "owner/repo" (e.g. "community-scripts/ProxmoxVE", "MickLesk/ProxmoxVE")
 	RepoSlug string `json:"repo_slug,omitempty"`
@@ -192,7 +192,7 @@ type TelemetryOut struct {
 	InstallDuration int    `json:"install_duration,omitempty"`
 	ErrorCategory   string `json:"error_category,omitempty"`
 
-	// Repository source: "ProxmoxVE", "ProxmoxVED", or "external"
+	// Repository source: "ProxmoxVE", "DevScripts", or "external"
 	RepoSource string `json:"repo_source,omitempty"`
 
 	// Dynamic repository slug "owner/repo"
@@ -237,9 +237,13 @@ type TelemetryStatusUpdate struct {
 // Allowed values for 'repo_source' field
 var allowedRepoSource = map[string]bool{
 	"ProxmoxVE":  true,
-	"ProxmoxVED": true,
+	"DevScripts": true,
 	"external":   true,
 }
+
+// legacyDevSource is what DevScripts reported before it was renamed from
+// ProxmoxVED. Stored rows keep it; incoming reports are filed under DevScripts.
+const legacyDevSource = "ProxmoxVED"
 
 // ---------- Write-Ahead Queue ----------
 // Decouples HTTP accept from ClickHouse write. The /telemetry handler enqueues
@@ -1322,11 +1326,14 @@ func validate(in *TelemetryIn) error {
 		switch {
 		case strings.HasSuffix(in.RepoSlug, "/ProxmoxVE"):
 			in.RepoSource = "ProxmoxVE"
-		case strings.HasSuffix(in.RepoSlug, "/ProxmoxVED"):
-			in.RepoSource = "ProxmoxVED"
+		case strings.HasSuffix(in.RepoSlug, "/DevScripts"), strings.HasSuffix(in.RepoSlug, "/"+legacyDevSource):
+			in.RepoSource = "DevScripts"
 		default:
 			in.RepoSource = "external"
 		}
+	}
+	if in.RepoSource == legacyDevSource {
+		in.RepoSource = "DevScripts"
 	}
 
 	// Default empty values to "unknown" for consistency
@@ -1421,7 +1428,7 @@ func validate(in *TelemetryIn) error {
 
 	// Validate repo_source: must be a known value or empty
 	if in.RepoSource != "" && !allowedRepoSource[in.RepoSource] {
-		return fmt.Errorf("rejected repo_source '%s' (must be 'ProxmoxVE', 'ProxmoxVED', or 'external')", in.RepoSource)
+		return fmt.Errorf("rejected repo_source '%s' (must be 'ProxmoxVE', 'DevScripts', or 'external')", in.RepoSource)
 	}
 
 	return nil

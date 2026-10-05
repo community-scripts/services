@@ -395,7 +395,7 @@ func TestNewDashCacheKeyDistinguishesEveryFilter(t *testing.T) {
 		key  string
 	}{
 		{"days", newDashCacheKey(30, "ProxmoxVE", "", "", "")},
-		{"repo source", newDashCacheKey(7, "ProxmoxVED", "", "", "")},
+		{"repo source", newDashCacheKey(7, "DevScripts", "", "", "")},
 		{"repo slug", newDashCacheKey(7, "ProxmoxVE", "some/repo", "", "")},
 		{"platform", newDashCacheKey(7, "ProxmoxVE", "", "incus", "")},
 		{"ctype", newDashCacheKey(7, "ProxmoxVE", "", "", "lxc")},

@@ -1,7 +1,7 @@
 # services
 
 Backend services for [ProxmoxVE](https://github.com/community-scripts/ProxmoxVE) and
-[ProxmoxVED](https://github.com/community-scripts/ProxmoxVED), in one Go module:
+[DevScripts](https://github.com/community-scripts/DevScripts), in one Go module:
 
 | Service | Path | What it does |
 | --- | --- | --- |
@@ -20,7 +20,7 @@ go test ./...
 
 ## Telemetry — overview
 
-This service acts as a telemetry ingestion layer between the bash installation scripts and a ClickHouse backend. When users run scripts from the ProxmoxVE/ProxmoxVED repositories, optional anonymous usage data is sent here for aggregation and analysis.
+This service acts as a telemetry ingestion layer between the bash installation scripts and a ClickHouse backend. When users run scripts from the ProxmoxVE/DevScripts repositories, optional anonymous usage data is sent here for aggregation and analysis.
 
 **What gets collected:**
 
@@ -109,7 +109,7 @@ repository root because `//go:embed` cannot reach into a parent directory.
 ## Related Projects
 
 - [ProxmoxVE](https://github.com/community-scripts/ProxmoxVE) - Proxmox VE Helper Scripts
-- [ProxmoxVED](https://github.com/community-scripts/ProxmoxVED) - Proxmox VE Helper Scripts (Dev)
+- [DevScripts](https://github.com/community-scripts/DevScripts) - Scripts in development and testing
 
 ## API Endpoints
 
