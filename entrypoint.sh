@@ -2,7 +2,7 @@
 set -e
 
 echo "============================================="
-echo "   ProxmoxVED Telemetry Service"
+echo "   community-scripts Telemetry Service"
 echo "============================================="
 
 echo "🚀 Starting telemetry service..."

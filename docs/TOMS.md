@@ -37,7 +37,7 @@
 ### 1.4 Separation Control
 | Measure | Implementation | Status |
 |---------|----------------|--------|
-| Data Separation | Separate collections for ProxmoxVE/ProxmoxVED | ✅ |
+| Data Separation | Separate collections for ProxmoxVE/DevScripts | ✅ |
 | Network Separation | Docker network isolation | ✅ |
 | Environment Separation | Production separated from development | ✅ |
 

@@ -467,10 +467,12 @@ func chSinceTime(days int) time.Time {
 //
 // Legacy rows created before repo_source existed have an empty repo_source.
 // Since the production client's fallback is "ProxmoxVE" (CI rewrites
-// ProxmoxVED→ProxmoxVE on promotion), those untagged historical installs are
+// DevScripts→ProxmoxVE on promotion), those untagged historical installs are
 // overwhelmingly production traffic. The "ProxmoxVE" filter therefore also
 // includes empty repo_source so the count reflects real production volume
 // instead of dropping ~70% of historical records into an invisible bucket.
+//
+// DevScripts also matches the rows it wrote as ProxmoxVED before the rename.
 //
 // An empty repoSource means "all" (no predicate). Other values match exactly.
 func repoSourcePred(repoSource string) (string, []interface{}) {
@@ -479,6 +481,8 @@ func repoSourcePred(repoSource string) (string, []interface{}) {
 		return "", nil
 	case "ProxmoxVE":
 		return "repo_source IN ('ProxmoxVE','')", nil
+	case "DevScripts", legacyDevSource:
+		return "repo_source IN ('DevScripts','" + legacyDevSource + "')", nil
 	default:
 		return "repo_source = ?", []interface{}{repoSource}
 	}
