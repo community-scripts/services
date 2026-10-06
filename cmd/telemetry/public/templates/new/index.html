@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Telemetry — consolidated</title>
+<link rel="icon" type="image/svg+xml" href="/static/img/logo.svg?v=cs-amber">
 <style>
   :root {
     --bg:#0d1017; --panel:#151922; --panel2:#1b2029; --line:#252b37;
@@ -24,7 +25,8 @@
            border-bottom:1px solid var(--line); padding:11px 20px 12px; }
   .titlebar { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap;
               margin-bottom:9px; }
-  h1 { font-size:15px; margin:0; font-weight:650; letter-spacing:.2px; }
+  h1 { font-size:15px; margin:0; font-weight:650; letter-spacing:.2px;
+       display:flex; align-items:center; gap:8px; }
   .sub { color:var(--muted); font-size:12.5px; }
   .filters { display:flex; flex-wrap:wrap; gap:14px; align-items:center; }
   .fg { display:flex; align-items:center; gap:6px; }
@@ -145,7 +147,7 @@
 <body>
 <header>
   <div class="titlebar">
-    <h1>Telemetry — consolidated</h1>
+    <h1><img width="28" height="28" src="/static/img/logo.svg?v=cs-amber" alt="" data-brand-logo>Telemetry — consolidated</h1>
     <span class="sub" id="sub">loading…</span>
     <span class="sub" id="stamp" style="margin-left:auto"></span>
   </div>

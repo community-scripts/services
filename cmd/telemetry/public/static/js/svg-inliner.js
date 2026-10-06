@@ -1,7 +1,7 @@
 const svgCache = new Map()
 
 function inlineSVGs() {
-  document.querySelectorAll('img[src$=".svg"]:not([data-inlined])').forEach(img => {
+  document.querySelectorAll('img[src$=".svg"]:not([data-inlined]):not([data-brand-logo])').forEach(img => {
     const url = img.src
     img.dataset.inlined = "true"
 

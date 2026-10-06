@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="cmd/telemetry/public/static/img/logo.png" width="128" height="128" alt="Community Scripts">
+</p>
+
 # services
 
 Backend services for [ProxmoxVE](https://github.com/community-scripts/ProxmoxVE) and
@@ -9,6 +13,15 @@ Backend services for [ProxmoxVE](https://github.com/community-scripts/ProxmoxVE)
 | **Discord bot** | `cmd/discord` | Turns a Discord support thread into a GitHub issue on a moderator's command |
 
 Each builds its own binary and its own image; they share nothing but the module.
+
+## Brand assets
+
+The approved CS Amber mark is shared by all four telemetry dashboard views and
+their favicons. The editable [SVG master](cmd/telemetry/public/static/img/logo.svg)
+and its 512px [PNG avatar](cmd/telemetry/public/static/img/logo.png) are embedded
+in the telemetry binary. Brand images bypass the monochrome SVG icon inliner
+to preserve the approved colors and mask. Versioned asset URLs invalidate old
+browser caches after deployment.
 
 ```bash
 go build ./cmd/telemetry
