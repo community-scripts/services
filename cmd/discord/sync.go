@@ -342,7 +342,12 @@ func (b *bot) handleIssueComment(e issueCommentEvent) {
 		log.Printf("discord bot: thread for %s#%d: %v", e.Repository.FullName, e.Issue.Number, err)
 		return
 	}
-	if rec == nil || !rec.SyncEnabled {
+	if rec == nil {
+		log.Printf("discord bot: comment on %s#%d ignored, no thread recorded (run backfill?)", e.Repository.FullName, e.Issue.Number)
+		return
+	}
+	if !rec.SyncEnabled {
+		log.Printf("discord bot: comment on %s#%d ignored, mirroring is off for thread %s", e.Repository.FullName, e.Issue.Number, rec.ThreadID)
 		return
 	}
 	rows, err := b.store.syncByComment(e.Comment.ID)
