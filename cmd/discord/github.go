@@ -23,6 +23,7 @@ type gitHub struct {
 	installationID string
 	key            *rsa.PrivateKey
 	client         *http.Client
+	apiBase        string
 
 	mu        sync.Mutex
 	token     string
@@ -39,6 +40,7 @@ func newGitHub(appID, installationID, privateKeyPEM string) (*gitHub, error) {
 		installationID: installationID,
 		key:            key,
 		client:         &http.Client{Timeout: 20 * time.Second},
+		apiBase:        "https://api.github.com",
 	}, nil
 }
 
@@ -106,7 +108,7 @@ func (g *gitHub) installationToken() (string, error) {
 		return "", err
 	}
 
-	url := fmt.Sprintf("https://api.github.com/app/installations/%s/access_tokens", g.installationID)
+	url := fmt.Sprintf("%s/app/installations/%s/access_tokens", g.apiBase, g.installationID)
 	req, err := http.NewRequest(http.MethodPost, url, nil)
 	if err != nil {
 		return "", err
@@ -135,6 +137,89 @@ func (g *gitHub) installationToken() (string, error) {
 	return g.token, nil
 }
 
+// do sends one authenticated request; path is relative to the API base.
+func (g *gitHub) do(method, path string, payload any, want int) ([]byte, error) {
+	token, err := g.installationToken()
+	if err != nil {
+		return nil, err
+	}
+	var body io.Reader
+	if payload != nil {
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			return nil, err
+		}
+		body = bytes.NewReader(encoded)
+	}
+	req, err := http.NewRequest(method, g.apiBase+path, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	resp, err := g.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%s %s: %w", method, path, err)
+	}
+	defer resp.Body.Close()
+	out, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != want {
+		return nil, fmt.Errorf("%s %s: %s: %s", method, path, resp.Status, strings.TrimSpace(string(out)))
+	}
+	return out, nil
+}
+
+func (g *gitHub) get(path string, out any) error {
+	body, err := g.do(http.MethodGet, path, nil, http.StatusOK)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(body, out)
+}
+
+type ghLabel struct {
+	Name string `json:"name"`
+}
+
+type ghIssue struct {
+	Number      int       `json:"number"`
+	Title       string    `json:"title"`
+	Body        string    `json:"body"`
+	HTMLURL     string    `json:"html_url"`
+	Locked      bool      `json:"locked"`
+	State       string    `json:"state"`
+	Labels      []ghLabel `json:"labels"`
+	PullRequest *struct{} `json:"pull_request,omitempty"`
+}
+
+func (i ghIssue) labelNames() []string {
+	names := make([]string, 0, len(i.Labels))
+	for _, l := range i.Labels {
+		names = append(names, l.Name)
+	}
+	return names
+}
+
+type ghUser struct {
+	Login string `json:"login"`
+	Type  string `json:"type"`
+}
+
+type ghComment struct {
+	ID                    int64  `json:"id"`
+	Body                  string `json:"body"`
+	HTMLURL               string `json:"html_url"`
+	User                  ghUser `json:"user"`
+	PerformedViaGitHubApp *struct {
+		ID int64 `json:"id"`
+	} `json:"performed_via_github_app"`
+}
+
 type createdIssue struct {
 	Number int    `json:"number"`
 	URL    string `json:"html_url"`
@@ -148,86 +233,144 @@ func splitRepo(fullName string) (owner, repo string, err error) {
 	return parts[0], parts[1], nil
 }
 
-func (g *gitHub) createIssue(fullName, title, body string, labels []string) (createdIssue, error) {
+func repoPath(fullName string) (string, error) {
 	owner, repo, err := splitRepo(fullName)
 	if err != nil {
-		return createdIssue{}, err
+		return "", err
 	}
-	token, err := g.installationToken()
+	return "/repos/" + owner + "/" + repo, nil
+}
+
+func (g *gitHub) createIssue(fullName, title, body string, labels []string) (createdIssue, error) {
+	base, err := repoPath(fullName)
 	if err != nil {
 		return createdIssue{}, err
 	}
-
 	payload := map[string]any{"title": title, "body": body}
 	if len(labels) > 0 {
 		payload["labels"] = labels
 	}
-	encoded, err := json.Marshal(payload)
-	if err != nil {
-		return createdIssue{}, err
-	}
-
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/issues", owner, repo)
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(encoded))
-	if err != nil {
-		return createdIssue{}, err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := g.client.Do(req)
+	out, err := g.do(http.MethodPost, base+"/issues", payload, http.StatusCreated)
 	if err != nil {
 		return createdIssue{}, fmt.Errorf("create issue: %w", err)
 	}
-	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusCreated {
-		return createdIssue{}, fmt.Errorf("create issue: %s: %s", resp.Status, strings.TrimSpace(string(respBody)))
-	}
-
 	var issue createdIssue
-	if err := json.Unmarshal(respBody, &issue); err != nil {
+	if err := json.Unmarshal(out, &issue); err != nil {
 		return createdIssue{}, fmt.Errorf("create issue: %w", err)
 	}
 	return issue, nil
 }
 
-// updateIssue refreshes the body of an issue that already mirrors this thread.
-// Title and labels are left alone: they may have been corrected on GitHub, and
-// the thread is only the source of the conversation.
+// updateIssue refreshes the body only: title and labels may have been corrected on GitHub.
 func (g *gitHub) updateIssue(fullName string, number int, body string) error {
-	owner, repo, err := splitRepo(fullName)
+	base, err := repoPath(fullName)
 	if err != nil {
 		return err
 	}
-	token, err := g.installationToken()
-	if err != nil {
-		return err
-	}
+	_, err = g.do(http.MethodPatch, fmt.Sprintf("%s/issues/%d", base, number), map[string]any{"body": body}, http.StatusOK)
+	return err
+}
 
-	encoded, err := json.Marshal(map[string]any{"body": body})
+func (g *gitHub) issue(fullName string, number int) (ghIssue, error) {
+	base, err := repoPath(fullName)
+	if err != nil {
+		return ghIssue{}, err
+	}
+	var out ghIssue
+	err = g.get(fmt.Sprintf("%s/issues/%d", base, number), &out)
+	return out, err
+}
+
+func (g *gitHub) listIssues(fullName, state string) ([]ghIssue, error) {
+	base, err := repoPath(fullName)
+	if err != nil {
+		return nil, err
+	}
+	var all []ghIssue
+	for page := 1; page <= 20; page++ {
+		var batch []ghIssue
+		if err := g.get(fmt.Sprintf("%s/issues?state=%s&per_page=100&page=%d", base, state, page), &batch); err != nil {
+			return nil, err
+		}
+		for _, i := range batch {
+			if i.PullRequest == nil {
+				all = append(all, i)
+			}
+		}
+		if len(batch) < 100 {
+			break
+		}
+	}
+	return all, nil
+}
+
+func (g *gitHub) comments(fullName string, number int) ([]ghComment, error) {
+	base, err := repoPath(fullName)
+	if err != nil {
+		return nil, err
+	}
+	var all []ghComment
+	for page := 1; page <= 20; page++ {
+		var batch []ghComment
+		if err := g.get(fmt.Sprintf("%s/issues/%d/comments?per_page=100&page=%d", base, number, page), &batch); err != nil {
+			return nil, err
+		}
+		all = append(all, batch...)
+		if len(batch) < 100 {
+			break
+		}
+	}
+	return all, nil
+}
+
+func (g *gitHub) createComment(fullName string, number int, body string) (ghComment, error) {
+	base, err := repoPath(fullName)
+	if err != nil {
+		return ghComment{}, err
+	}
+	out, err := g.do(http.MethodPost, fmt.Sprintf("%s/issues/%d/comments", base, number), map[string]string{"body": body}, http.StatusCreated)
+	if err != nil {
+		return ghComment{}, err
+	}
+	var c ghComment
+	if err := json.Unmarshal(out, &c); err != nil {
+		return ghComment{}, err
+	}
+	return c, nil
+}
+
+func (g *gitHub) updateComment(fullName string, id int64, body string) error {
+	base, err := repoPath(fullName)
 	if err != nil {
 		return err
 	}
+	_, err = g.do(http.MethodPatch, fmt.Sprintf("%s/issues/comments/%d", base, id), map[string]string{"body": body}, http.StatusOK)
+	return err
+}
 
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/issues/%d", owner, repo, number)
-	req, err := http.NewRequest(http.MethodPatch, url, bytes.NewReader(encoded))
+func (g *gitHub) deleteComment(fullName string, id int64) error {
+	base, err := repoPath(fullName)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("Content-Type", "application/json")
+	_, err = g.do(http.MethodDelete, fmt.Sprintf("%s/issues/comments/%d", base, id), nil, http.StatusNoContent)
+	return err
+}
 
-	resp, err := g.client.Do(req)
+func (g *gitHub) lockIssue(fullName string, number int, reason string) error {
+	base, err := repoPath(fullName)
 	if err != nil {
-		return fmt.Errorf("update issue: %w", err)
+		return err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("update issue: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	_, err = g.do(http.MethodPut, fmt.Sprintf("%s/issues/%d/lock", base, number), map[string]string{"lock_reason": reason}, http.StatusNoContent)
+	return err
+}
+
+func (g *gitHub) unlockIssue(fullName string, number int) error {
+	base, err := repoPath(fullName)
+	if err != nil {
+		return err
 	}
-	return nil
+	_, err = g.do(http.MethodDelete, fmt.Sprintf("%s/issues/%d/lock", base, number), nil, http.StatusNoContent)
+	return err
 }
