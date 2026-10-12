@@ -109,7 +109,12 @@ cmd/discord/
   main.go           # Session, command registration, interaction handling
   thread.go         # Thread reader and issue renderer
   store.go          # PocketBase client
-  github.go         # GitHub App auth and issue creation
+  github.go         # GitHub App auth, issues, comments, locks
+  webhook.go        # HTTP listener for GitHub webhooks
+  lifecycle.go      # Testing thread lifecycle driven by issue events
+  script.go         # Script resolution from the issue form
+  sync.go           # Message mirroring in both directions, /sync command
+  backfill.go       # Rows for threads the former GitHub Action created
 Dockerfile          # Telemetry image
 Dockerfile.discord  # Discord bot image
 entrypoint.sh       # Telemetry container entrypoint
@@ -160,14 +165,19 @@ For full details, see:
 
 ## Discord bot
 
-Turns a Discord support thread into a GitHub issue when a moderator asks for it. The
-thread is copied across verbatim — authors, timestamps, message order — so nothing is
-summarised away or has to be retyped.
+Links Discord threads to GitHub issues in both directions:
 
-Right-click any message in a thread or forum post → **Apps → Create GitHub Issue**. The
-reply is ephemeral; the issue link is posted once into the thread.
+- **Support threads → issues.** Right-click any message in a thread or forum post →
+  **Apps → Create GitHub Issue**. The thread is copied across verbatim — authors,
+  timestamps, message order — so nothing is summarised away or has to be retyped.
+  The reply is ephemeral; the issue link is posted once into the thread.
+- **Testing thread lifecycle.** When a DevScripts issue gets the `Ready For Testing`
+  label, the bot opens a forum post with the test command and keeps it in step with
+  the issue until the issue closes.
+- **Live mirroring.** A thread with mirroring on posts its messages to the issue, and
+  the issue's comments come back into the thread.
 
-### Behaviour
+### Support threads
 
 - **Moderator only.** The command is hidden from members without *Manage Messages*, but
   that is cosmetic — the binding check runs server-side against
@@ -193,16 +203,59 @@ Images are copied into the `issue_attachments` collection and embedded from
 there, because Discord's attachment links are signed and expire after about a
 day. Other files stay as links, so logs and archives do not fill the database.
 
+### Testing threads
+
+The `issues` webhook of the dev repository (`discord_config.dev_repo`) drives the
+lifecycle:
+
+| Issue event | Thread |
+| --- | --- |
+| `Ready For Testing` added | Forum post "Wanted Tester for …" named after the issue in `testing_channel_id`, tagged *Testing*, with the install command, default credentials and notes from the script's json. The same text plus the thread link is commented on the issue. A second time, the existing post is reopened with a "testing resumed" notice. |
+| `Ready For Testing` removed | "Testing paused" notice with the last human comment, tag *On Hold*. Skipped when `deferred` or a migration label is on the issue, those modes own the message. |
+| `deferred` added | Notice, thread locked and archived, tag *Deferred*; the issue is commented and locked. |
+| `Started Migration To ProxmoxVE` added | Migration notice with the PR, thread locked and archived, tag *Migrating*, mirroring off. |
+| Issue closed | Thread deleted. |
+
+The script path comes from the issue form (*Name of the Script*, *Script Type*,
+*Script path*, *Where does it run?*) and is checked on `main` before anything is
+posted; a missing file gets a warning comment instead of a thread. Label changes
+made with a workflow's `GITHUB_TOKEN` reach the bot too, since App webhooks are
+not subject to the no-recursion rule for Actions.
+
+Threads the former GitHub Action created have no row yet. `discord-bot backfill`
+finds them through the `<!-- discord-thread-id -->` marker in the issue comments
+and records them; `--enable-sync` also turns mirroring on and pins the notice.
+
+### Mirroring
+
+- Testing threads start with mirroring on and say so in the opening post. Support
+  threads start with it off; a moderator turns it on with `/sync on`, which pins a
+  notice that messages are public on GitHub, and off with `/sync off`.
+- Discord messages are collected per thread for `SYNC_BATCH_SECONDS` and posted as
+  one issue comment, one quoted block per message with author and time. Images go
+  through `issue_attachments`; other files stay links. Editing or deleting a
+  message rebuilds that comment; deleting the last one deletes the comment.
+- Issue comments are posted into the thread as `**login** on GitHub`, split at
+  2000 characters, HTML comments stripped, mentions never resolved. Edits and
+  deletions follow.
+- Nothing loops: the bot ignores its own Discord messages and comments made by its
+  own GitHub App. Redelivered webhooks are dropped through the `discord_sync` rows.
+- While a thread is mirrored, **Create GitHub Issue** refuses to refresh the issue
+  body, since the comments already carry the conversation.
+
 ### Setup
 
 1. *Discord application* — enable the **Message Content** intent, invite with the `bot`
-   and `applications.commands` scopes, grant **Read Message History** and **Send
-   Messages** in the support channels. The context-menu command registers itself per
-   guild at startup, so it appears immediately.
-2. *GitHub App* — **Issues: Read and write** on the target repository; note app id,
-   installation id and private key.
+   and `applications.commands` scopes, grant **Read Message History**, **Send
+   Messages**, **Manage Messages** and **Manage Threads** in the support and
+   testing channels. Commands register themselves per guild at startup.
+2. *GitHub App* — **Issues: Read and write** on the dev and the main repository.
+   Subscribe to the **Issues** and **Issue comment** events, point the webhook at
+   `https://<bot>/webhooks/github` and set a secret. Note app id, installation id
+   and private key.
 3. *PocketBase* — import `cmd/discord/pocketbase-schema.json` under *Settings → Import
-   collections*, then add one `discord_config` record:
+   collections* (existing collections are updated in place), then add one
+   `discord_config` record:
 
    | Field | Type | Example |
    | --- | --- | --- |
@@ -211,23 +264,27 @@ day. Other files stay as links, so logs and archives do not fill the database.
    | `target_repo` | text | `community-scripts/ProxmoxVE` |
    | `default_labels` | json | `["bug"]` |
    | `enabled` | bool | `true` |
+   | `dev_repo` | text | `community-scripts/DevScripts` |
+   | `testing_channel_id` | text | `000000000000000003` |
 
    Snowflakes are `text` on purpose — they are 64-bit and JavaScript clients would
-   silently mangle them past 2^53 as numbers.
+   silently mangle them past 2^53 as numbers. The schema ships with API rules that
+   let any authenticated account read `discord_config` and read and write
+   `discord_issues` and `discord_sync`, so the bot and the website can use normal
+   accounts instead of the superuser.
 
 ### Environment
 
-`DISCORD_TOKEN`, `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`,
-`GITHUB_APP_PRIVATE_KEY` (PEM or base64, in any mangling an env field inflicts),
-`POCKETBASE_URL`, `POCKETBASE_ADMIN_EMAIL`, `POCKETBASE_ADMIN_PASSWORD`, optional
-`MAX_THREAD_MESSAGES` (default 500).
-
-Optional `POCKETBASE_AUTH_COLLECTION` authenticates against a normal auth
-collection instead of the superuser, so the bot can run with an account that only
-reaches its own two collections. Set it to the collection name and put that
-account's identity and password in `POCKETBASE_ADMIN_EMAIL` /
-`POCKETBASE_ADMIN_PASSWORD`. The collections then need API rules: `discord_config`
-list and view, `discord_issues` list, view and create.
+| Variable | Required | Meaning |
+| --- | --- | --- |
+| `DISCORD_TOKEN` | yes | bot token |
+| `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, `GITHUB_APP_PRIVATE_KEY` | yes | GitHub App; the key may be PEM or base64, in any mangling an env field inflicts |
+| `GITHUB_WEBHOOK_SECRET` | for lifecycle and mirroring | without it the webhook route is not served and only the context-menu export works |
+| `POCKETBASE_URL`, `POCKETBASE_ADMIN_EMAIL`, `POCKETBASE_ADMIN_PASSWORD` | yes | PocketBase |
+| `POCKETBASE_AUTH_COLLECTION` | no | authenticate as a record of this collection instead of the superuser |
+| `HTTP_ADDR` | no | listen address, default `:8080` |
+| `SYNC_BATCH_SECONDS` | no | how long Discord messages are collected before one comment is posted, default `60` |
+| `MAX_THREAD_MESSAGES` | no | cap for the one-shot export, default `500` |
 
 ## License
 

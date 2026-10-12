@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -11,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 	"unicode"
 
 	"github.com/bwmarrin/discordgo"
@@ -28,6 +31,9 @@ type appConfig struct {
 	pocketbasePassword   string
 	pocketbaseCollection string
 	maxThreadMessages    int
+	batchWindow          time.Duration
+	webhookSecret        string
+	httpAddr             string
 }
 
 func loadConfig() (appConfig, error) {
@@ -61,6 +67,19 @@ func loadConfig() (appConfig, error) {
 			return cfg, fmt.Errorf("MAX_THREAD_MESSAGES must be a positive integer, got %q", raw)
 		}
 		cfg.maxThreadMessages = n
+	}
+	cfg.batchWindow = 60 * time.Second
+	if raw := os.Getenv("SYNC_BATCH_SECONDS"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 {
+			return cfg, fmt.Errorf("SYNC_BATCH_SECONDS must be a positive integer, got %q", raw)
+		}
+		cfg.batchWindow = time.Duration(n) * time.Second
+	}
+	cfg.webhookSecret = os.Getenv("GITHUB_WEBHOOK_SECRET")
+	cfg.httpAddr = ":8080"
+	if v := os.Getenv("HTTP_ADDR"); v != "" {
+		cfg.httpAddr = v
 	}
 	return cfg, nil
 }
@@ -116,9 +135,12 @@ func normalisePEM(raw string) string {
 }
 
 type bot struct {
-	cfg    appConfig
-	store  *store
-	github *gitHub
+	cfg     appConfig
+	store   *store
+	github  *gitHub
+	threads threadAPI
+	index   *syncIndex
+	batch   *batcher
 }
 
 func main() {
@@ -136,46 +158,86 @@ func main() {
 		cfg:    cfg,
 		store:  newStore(cfg.pocketbaseURL, cfg.pocketbaseEmail, cfg.pocketbasePassword, cfg.pocketbaseCollection),
 		github: gh,
+		index:  newSyncIndex(),
+		batch:  newBatcher(cfg.batchWindow),
 	}
 
 	session, err := discordgo.New("Bot " + cfg.discordToken)
 	if err != nil {
 		log.Fatalf("discord bot: %v", err)
 	}
+	b.threads = &discordThreads{s: session}
 	session.Identify.Intents = discordgo.IntentsGuilds | discordgo.IntentsGuildMessages | discordgo.IntentMessageContent
 
 	session.AddHandler(b.onReady)
 	session.AddHandler(b.onGuildCreate)
 	session.AddHandler(b.onInteraction)
+	session.AddHandler(b.onMessageCreate)
+	session.AddHandler(b.onMessageUpdate)
+	session.AddHandler(b.onMessageDelete)
 
 	if err := session.Open(); err != nil {
 		log.Fatalf("discord bot: open session: %v", err)
 	}
 	defer session.Close()
 
-	log.Println("discord bot: running, press Ctrl+C to stop")
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-	<-stop
+	if len(os.Args) > 1 && os.Args[1] == "backfill" {
+		if err := b.runBackfill(os.Args[2:]); err != nil {
+			log.Fatalf("discord bot: backfill: %v", err)
+		}
+		return
+	}
+
+	b.reloadIndex()
+	queue := make(chan webhookEvent, 256)
+	go b.worker(queue)
+	stop := make(chan struct{})
+	go b.flushLoop(stop)
+	go b.refreshLoop(stop)
+
+	srv := newWebhookServer(cfg.httpAddr, cfg.webhookSecret, queue)
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("discord bot: http: %v", err)
+		}
+	}()
+	if cfg.webhookSecret == "" {
+		log.Println("discord bot: GITHUB_WEBHOOK_SECRET is empty, the issue lifecycle and GitHub→Discord mirroring are off")
+	}
+	log.Printf("discord bot: running, http on %s", cfg.httpAddr)
+
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	<-sig
+
+	close(stop)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Printf("discord bot: http shutdown: %v", err)
+	}
+	for threadID, msgs := range b.batch.due(time.Now().Add(cfg.batchWindow)) {
+		b.flushBatch(threadID, msgs)
+	}
 }
 
 // Guild-scoped registration applies immediately, unlike global commands which
 // take up to an hour to propagate.
-func registerCommand(s *discordgo.Session, appID, guildID string) {
+func registerCommands(s *discordgo.Session, appID, guildID string) {
 	permissions := int64(discordgo.PermissionManageMessages)
-	command := &discordgo.ApplicationCommand{
-		Name:                     commandName,
-		Type:                     discordgo.MessageApplicationCommand,
-		DefaultMemberPermissions: &permissions,
-	}
-	if _, err := s.ApplicationCommandCreate(appID, guildID, command); err != nil {
-		log.Printf("discord bot: register command in guild %s: %v", guildID, err)
+	for _, command := range []*discordgo.ApplicationCommand{
+		{Name: commandName, Type: discordgo.MessageApplicationCommand, DefaultMemberPermissions: &permissions},
+		syncCommand(&permissions),
+	} {
+		if _, err := s.ApplicationCommandCreate(appID, guildID, command); err != nil {
+			log.Printf("discord bot: register %s in guild %s: %v", command.Name, guildID, err)
+		}
 	}
 }
 
 func (b *bot) onReady(s *discordgo.Session, r *discordgo.Ready) {
 	for _, guild := range r.Guilds {
-		registerCommand(s, r.User.ID, guild.ID)
+		registerCommands(s, r.User.ID, guild.ID)
 	}
 	log.Printf("discord bot: ready as %s, %d guild(s)", r.User.String(), len(r.Guilds))
 }
@@ -183,7 +245,7 @@ func (b *bot) onReady(s *discordgo.Session, r *discordgo.Ready) {
 // Ready only lists guilds the bot was already in. Without this, being invited
 // while it runs leaves the command unregistered until the next restart.
 func (b *bot) onGuildCreate(s *discordgo.Session, g *discordgo.GuildCreate) {
-	registerCommand(s, s.State.User.ID, g.ID)
+	registerCommands(s, s.State.User.ID, g.ID)
 	log.Printf("discord bot: joined guild %s (%s)", g.Name, g.ID)
 }
 
@@ -202,8 +264,11 @@ const modalPrefix = "create-issue:"
 func (b *bot) onInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	switch i.Type {
 	case discordgo.InteractionApplicationCommand:
-		if i.ApplicationCommandData().Name == commandName {
+		switch i.ApplicationCommandData().Name {
+		case commandName:
 			b.openModal(s, i)
+		case syncCommandName:
+			b.handleSyncCommand(s, i)
 		}
 	case discordgo.InteractionModalSubmit:
 		if strings.HasPrefix(i.ModalSubmitData().CustomID, modalPrefix) {
@@ -301,6 +366,9 @@ func (b *bot) handle(s *discordgo.Session, i *discordgo.InteractionCreate) (stri
 	if err != nil {
 		return "", fmt.Errorf("check for existing issue: %w", err)
 	}
+	if existing != nil && existing.SyncEnabled {
+		return "This thread is mirrored live, so the issue is already up to date.", nil
+	}
 
 	messages, err := collectThread(s, channel.ID, b.cfg.maxThreadMessages)
 	if err != nil {
@@ -359,8 +427,10 @@ func (b *bot) handle(s *discordgo.Session, i *discordgo.InteractionCreate) (stri
 		"created_by_id":   i.Member.User.ID,
 		"created_by_name": moderator,
 		"message_count":   len(messages),
+		"kind":            "support",
+		"sync_enabled":    false,
 	}
-	if err := b.store.recordIssue(entry); err != nil {
+	if _, err := b.store.recordIssue(entry); err != nil {
 		// The issue exists, so this must not read as a failure -- but dedup stays
 		// broken for this thread until the row is reconciled.
 		log.Printf("discord bot: issue %s created but not recorded: %v", issue.URL, err)
