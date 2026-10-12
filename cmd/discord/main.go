@@ -116,9 +116,11 @@ func normalisePEM(raw string) string {
 }
 
 type bot struct {
-	cfg    appConfig
-	store  *store
-	github *gitHub
+	cfg     appConfig
+	store   *store
+	github  *gitHub
+	threads threadAPI
+	index   *syncIndex
 }
 
 func main() {
@@ -136,12 +138,14 @@ func main() {
 		cfg:    cfg,
 		store:  newStore(cfg.pocketbaseURL, cfg.pocketbaseEmail, cfg.pocketbasePassword, cfg.pocketbaseCollection),
 		github: gh,
+		index:  newSyncIndex(),
 	}
 
 	session, err := discordgo.New("Bot " + cfg.discordToken)
 	if err != nil {
 		log.Fatalf("discord bot: %v", err)
 	}
+	b.threads = &discordThreads{s: session}
 	session.Identify.Intents = discordgo.IntentsGuilds | discordgo.IntentsGuildMessages | discordgo.IntentMessageContent
 
 	session.AddHandler(b.onReady)
