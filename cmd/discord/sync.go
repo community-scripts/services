@@ -122,6 +122,47 @@ func (b *batcher) add(m *discordgo.Message, now time.Time) {
 	p.msgs = append(p.msgs, m)
 }
 
+func (b *batcher) remove(channelID, messageID string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	p := b.byThread[channelID]
+	if p == nil {
+		return
+	}
+	kept := p.msgs[:0]
+	for _, m := range p.msgs {
+		if m.ID != messageID {
+			kept = append(kept, m)
+		}
+	}
+	p.msgs = kept
+	if len(kept) == 0 {
+		delete(b.byThread, channelID)
+	}
+}
+
+// Update events for embed resolution carry no content; those leave the text alone.
+func (b *batcher) update(m *discordgo.Message) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	p := b.byThread[m.ChannelID]
+	if p == nil {
+		return
+	}
+	for _, old := range p.msgs {
+		if old.ID != m.ID {
+			continue
+		}
+		if m.Content != "" {
+			old.Content = m.Content
+			old.Mentions = m.Mentions
+		}
+		if m.Attachments != nil {
+			old.Attachments = m.Attachments
+		}
+	}
+}
+
 func (b *batcher) due(now time.Time) map[string][]*discordgo.Message {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -276,10 +317,12 @@ func (b *bot) flushBatch(threadID string, msgs []*discordgo.Message) {
 }
 
 func (b *bot) onMessageUpdate(s *discordgo.Session, m *discordgo.MessageUpdate) {
+	b.batch.update(m.Message)
 	b.refreshMirroredComment(s, m.ChannelID, m.ID, false)
 }
 
 func (b *bot) onMessageDelete(s *discordgo.Session, m *discordgo.MessageDelete) {
+	b.batch.remove(m.ChannelID, m.ID)
 	b.refreshMirroredComment(s, m.ChannelID, m.ID, true)
 }
 

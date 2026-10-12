@@ -63,6 +63,27 @@ func TestBatcherDue(t *testing.T) {
 	}
 }
 
+func TestBatcherDropsDeletedAndEditedBeforeFlush(t *testing.T) {
+	t0 := time.Date(2026, 10, 12, 14, 0, 0, 0, time.UTC)
+	b := newBatcher(60 * time.Second)
+	b.add(&discordgo.Message{ID: "1", ChannelID: "A", Content: "spam"}, t0)
+	b.add(&discordgo.Message{ID: "2", ChannelID: "A", Content: "old"}, t0)
+	b.remove("A", "1")
+	b.update(&discordgo.Message{ID: "2", ChannelID: "A", Content: "new"})
+	b.update(&discordgo.Message{ID: "2", ChannelID: "A"})
+
+	got := b.due(t0.Add(61 * time.Second))
+	if len(got["A"]) != 1 || got["A"][0].ID != "2" || got["A"][0].Content != "new" {
+		t.Fatalf("want only message 2 with its edit, got %+v", got["A"])
+	}
+
+	b.add(&discordgo.Message{ID: "3", ChannelID: "B"}, t0)
+	b.remove("B", "3")
+	if got := b.due(t0.Add(200 * time.Second)); len(got) != 0 {
+		t.Fatalf("a batch emptied by deletions must not flush, got %v", got)
+	}
+}
+
 func TestPlainContentMentions(t *testing.T) {
 	m := &discordgo.Message{
 		Content:  "hi <@123> and <@!456>, see <#789>",
