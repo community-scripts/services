@@ -359,8 +359,10 @@ func (b *bot) handle(s *discordgo.Session, i *discordgo.InteractionCreate) (stri
 		"created_by_id":   i.Member.User.ID,
 		"created_by_name": moderator,
 		"message_count":   len(messages),
+		"kind":            "support",
+		"sync_enabled":    false,
 	}
-	if err := b.store.recordIssue(entry); err != nil {
+	if _, err := b.store.recordIssue(entry); err != nil {
 		// The issue exists, so this must not read as a failure -- but dedup stays
 		// broken for this thread until the row is reconciled.
 		log.Printf("discord bot: issue %s created but not recorded: %v", issue.URL, err)
