@@ -1,19 +1,37 @@
 package main
 
-import "log"
+import (
+	"log"
+	"time"
+)
+
+var reconcileBackoff = 30 * time.Second
 
 // Threads the GitHub Action made, and rows that predate always-on mirroring,
-// are brought up to date once after login.
+// are brought up to date after login. Both passes are idempotent, so an API
+// hiccup is retried rather than left until the next restart.
 func (b *bot) reconcileThreads() {
-	enabled, err := b.enableRecordedThreads()
-	if err != nil {
-		log.Printf("discord bot: reconcile rows: %v", err)
+	delay := reconcileBackoff
+	for attempt := 1; ; attempt++ {
+		enabled, errRows := b.enableRecordedThreads()
+		added, errMarkers := b.recordMarkedThreads()
+		log.Printf("discord bot: reconcile: mirroring turned on for %d thread(s), %d thread(s) recorded", enabled, added)
+		if errRows == nil && errMarkers == nil {
+			return
+		}
+		for _, err := range []error{errRows, errMarkers} {
+			if err != nil {
+				log.Printf("discord bot: reconcile: %v", err)
+			}
+		}
+		if attempt == 5 {
+			log.Printf("discord bot: reconcile: giving up until the next restart")
+			return
+		}
+		log.Printf("discord bot: reconcile: retrying in %s", delay)
+		time.Sleep(delay)
+		delay *= 2
 	}
-	added, err := b.recordMarkedThreads()
-	if err != nil {
-		log.Printf("discord bot: reconcile markers: %v", err)
-	}
-	log.Printf("discord bot: reconcile: mirroring turned on for %d thread(s), %d thread(s) recorded", enabled, added)
 }
 
 func (b *bot) enableRecordedThreads() (int, error) {

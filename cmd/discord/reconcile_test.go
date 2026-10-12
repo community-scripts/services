@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 type fakeThreads struct {
@@ -27,6 +28,25 @@ func (f *fakeThreads) post(threadID, _ string) (string, error) {
 func (f *fakeThreads) pin(_, messageID string) error {
 	f.pins = append(f.pins, messageID)
 	return nil
+}
+
+func TestReconcileRetriesAfterApiError(t *testing.T) {
+	reconcileBackoff = 0
+	t.Cleanup(func() { reconcileBackoff = 30 * time.Second })
+	calls := 0
+	s := testStore(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			http.Error(w, "Server Error", http.StatusBadGateway)
+			return
+		}
+		io.WriteString(w, `{"page":1,"totalPages":1,"items":[]}`)
+	})
+	b := &bot{store: s, threads: &fakeThreads{}, index: newSyncIndex()}
+	b.reconcileThreads()
+	if calls < 2 {
+		t.Fatalf("want a retry after the 502, got %d call(s)", calls)
+	}
 }
 
 func TestEnableRecordedThreadsSkipsDeletedOnes(t *testing.T) {
