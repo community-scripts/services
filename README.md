@@ -114,7 +114,7 @@ cmd/discord/
   lifecycle.go      # Testing thread lifecycle driven by issue events
   script.go         # Script resolution from the issue form
   sync.go           # Message mirroring in both directions, /sync command
-  backfill.go       # Rows for threads the former GitHub Action created
+  reconcile.go      # Startup pass: rows and mirroring for pre-existing threads
 Dockerfile          # Telemetry image
 Dockerfile.discord  # Discord bot image
 entrypoint.sh       # Telemetry container entrypoint
@@ -222,15 +222,17 @@ posted; a missing file gets a warning comment instead of a thread. Label changes
 made with a workflow's `GITHUB_TOKEN` reach the bot too, since App webhooks are
 not subject to the no-recursion rule for Actions.
 
-Threads the former GitHub Action created have no row yet. `discord-bot backfill`
-finds them through the `<!-- discord-thread-id -->` marker in the issue comments
-and records them; `--enable-sync` also turns mirroring on and pins the notice.
+Threads the former GitHub Action created get their row at startup: the bot walks
+the open issues of `dev_repo`, follows the `<!-- discord-thread-id -->` marker in
+the comments, records the thread and turns mirroring on with a pinned notice.
+Nothing has to be run by hand.
 
 ### Mirroring
 
-- Testing threads start with mirroring on and say so in the opening post. Support
-  threads start with it off; a moderator turns it on with `/sync on`, which pins a
-  notice that messages are public on GitHub, and off with `/sync off`.
+- Testing threads are always mirrored while they are open for testing; the opening
+  post says so and `/sync` refuses on them. A support thread is mirrored from the
+  moment **Create GitHub Issue** links it, with a pinned notice; a moderator can
+  stop that with `/sync off` and resume with `/sync on`.
 - Discord messages are collected per thread for `SYNC_BATCH_SECONDS` and posted as
   one issue comment, one quoted block per message with author and time. Images go
   through `issue_attachments`; other files stay links. Editing or deleting a

@@ -87,8 +87,12 @@ func (b *bot) refreshLoop(stop <-chan struct{}) {
 	}
 }
 
-func mirrorOnNotice(issueURL string) string {
-	return "🔁 Messages in this thread are now mirrored to " + issueURL + " and are public there. A moderator can stop this with `/sync off`."
+func mirrorOnNotice(issueURL string, canStop bool) string {
+	s := "🔁 Messages in this thread are mirrored to " + issueURL + " and are public there."
+	if canStop {
+		s += " A moderator can stop this with `/sync off`."
+	}
+	return s
 }
 
 type pending struct {
@@ -343,7 +347,7 @@ func (b *bot) handleIssueComment(e issueCommentEvent) {
 		return
 	}
 	if rec == nil {
-		log.Printf("discord bot: comment on %s#%d ignored, no thread recorded (run backfill?)", e.Repository.FullName, e.Issue.Number)
+		log.Printf("discord bot: comment on %s#%d ignored, no thread recorded", e.Repository.FullName, e.Issue.Number)
 		return
 	}
 	if !rec.SyncEnabled {
@@ -463,6 +467,9 @@ func (b *bot) toggleSync(i *discordgo.InteractionCreate) (string, error) {
 	if rec == nil {
 		return "No GitHub issue is linked to this thread. Use **Create GitHub Issue** first.", nil
 	}
+	if rec.Kind == "testing" {
+		return "Testing threads are always mirrored to their issue.", nil
+	}
 	options := i.ApplicationCommandData().Options
 	on := len(options) > 0 && options[0].StringValue() == "on"
 	if rec.SyncEnabled == on {
@@ -478,7 +485,7 @@ func (b *bot) toggleSync(i *discordgo.InteractionCreate) (string, error) {
 	b.index.set(*rec)
 
 	if on {
-		id, err := b.threads.post(rec.ThreadID, mirrorOnNotice(rec.IssueURL))
+		id, err := b.threads.post(rec.ThreadID, mirrorOnNotice(rec.IssueURL, true))
 		if err != nil {
 			return "", err
 		}

@@ -327,12 +327,11 @@ func (b *bot) resolveThread(lc *lifecycleContext) error {
 	if id == "" || !b.threads.exists(id) {
 		return nil
 	}
-	rec, err = b.store.recordIssue(b.threadRow(lc, id, stateFromLabels(lc.issue.labelNames()), false))
+	rec, err = b.recordMarkedThread(lc.cfg, lc.issue, id)
 	if err != nil {
 		return err
 	}
 	lc.rec, lc.exists = rec, true
-	b.index.set(*rec)
 	return nil
 }
 

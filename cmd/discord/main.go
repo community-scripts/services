@@ -181,14 +181,12 @@ func main() {
 	}
 	defer session.Close()
 
-	if len(os.Args) > 1 && os.Args[1] == "backfill" {
-		if err := b.runBackfill(os.Args[2:]); err != nil {
-			log.Fatalf("discord bot: backfill: %v", err)
-		}
-		return
+	if len(os.Args) > 1 {
+		log.Fatalf("discord bot: unknown command %q", os.Args[1])
 	}
 
 	b.reloadIndex()
+	go b.reconcileThreads()
 	queue := make(chan webhookEvent, 256)
 	go b.worker(queue)
 	stop := make(chan struct{})
@@ -428,17 +426,15 @@ func (b *bot) handle(s *discordgo.Session, i *discordgo.InteractionCreate) (stri
 		"created_by_name": moderator,
 		"message_count":   len(messages),
 		"kind":            "support",
-		"sync_enabled":    false,
+		"sync_enabled":    true,
 	}
-	if _, err := b.store.recordIssue(entry); err != nil {
-		// The issue exists, so this must not read as a failure -- but dedup stays
-		// broken for this thread until the row is reconciled.
+	if rec, err := b.store.recordIssue(entry); err != nil {
 		log.Printf("discord bot: issue %s created but not recorded: %v", issue.URL, err)
+	} else {
+		b.index.set(*rec)
 	}
 
-	if _, err := s.ChannelMessageSend(channel.ID, "📋 Tracked on GitHub: "+issue.URL); err != nil {
-		log.Printf("discord bot: post issue link to thread: %v", err)
-	}
+	b.pinMirrorNotice(channel.ID, issue.URL, true)
 
 	return fmt.Sprintf("Created %s from %d message(s).", issue.URL, len(messages)), nil
 }
