@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 	"unicode"
 
 	"github.com/bwmarrin/discordgo"
@@ -28,6 +29,7 @@ type appConfig struct {
 	pocketbasePassword   string
 	pocketbaseCollection string
 	maxThreadMessages    int
+	batchWindow          time.Duration
 }
 
 func loadConfig() (appConfig, error) {
@@ -61,6 +63,14 @@ func loadConfig() (appConfig, error) {
 			return cfg, fmt.Errorf("MAX_THREAD_MESSAGES must be a positive integer, got %q", raw)
 		}
 		cfg.maxThreadMessages = n
+	}
+	cfg.batchWindow = 60 * time.Second
+	if raw := os.Getenv("SYNC_BATCH_SECONDS"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 {
+			return cfg, fmt.Errorf("SYNC_BATCH_SECONDS must be a positive integer, got %q", raw)
+		}
+		cfg.batchWindow = time.Duration(n) * time.Second
 	}
 	return cfg, nil
 }
@@ -121,6 +131,7 @@ type bot struct {
 	github  *gitHub
 	threads threadAPI
 	index   *syncIndex
+	batch   *batcher
 }
 
 func main() {
@@ -139,6 +150,7 @@ func main() {
 		store:  newStore(cfg.pocketbaseURL, cfg.pocketbaseEmail, cfg.pocketbasePassword, cfg.pocketbaseCollection),
 		github: gh,
 		index:  newSyncIndex(),
+		batch:  newBatcher(cfg.batchWindow),
 	}
 
 	session, err := discordgo.New("Bot " + cfg.discordToken)
@@ -165,21 +177,21 @@ func main() {
 
 // Guild-scoped registration applies immediately, unlike global commands which
 // take up to an hour to propagate.
-func registerCommand(s *discordgo.Session, appID, guildID string) {
+func registerCommands(s *discordgo.Session, appID, guildID string) {
 	permissions := int64(discordgo.PermissionManageMessages)
-	command := &discordgo.ApplicationCommand{
-		Name:                     commandName,
-		Type:                     discordgo.MessageApplicationCommand,
-		DefaultMemberPermissions: &permissions,
-	}
-	if _, err := s.ApplicationCommandCreate(appID, guildID, command); err != nil {
-		log.Printf("discord bot: register command in guild %s: %v", guildID, err)
+	for _, command := range []*discordgo.ApplicationCommand{
+		{Name: commandName, Type: discordgo.MessageApplicationCommand, DefaultMemberPermissions: &permissions},
+		syncCommand(&permissions),
+	} {
+		if _, err := s.ApplicationCommandCreate(appID, guildID, command); err != nil {
+			log.Printf("discord bot: register %s in guild %s: %v", command.Name, guildID, err)
+		}
 	}
 }
 
 func (b *bot) onReady(s *discordgo.Session, r *discordgo.Ready) {
 	for _, guild := range r.Guilds {
-		registerCommand(s, r.User.ID, guild.ID)
+		registerCommands(s, r.User.ID, guild.ID)
 	}
 	log.Printf("discord bot: ready as %s, %d guild(s)", r.User.String(), len(r.Guilds))
 }
@@ -187,7 +199,7 @@ func (b *bot) onReady(s *discordgo.Session, r *discordgo.Ready) {
 // Ready only lists guilds the bot was already in. Without this, being invited
 // while it runs leaves the command unregistered until the next restart.
 func (b *bot) onGuildCreate(s *discordgo.Session, g *discordgo.GuildCreate) {
-	registerCommand(s, s.State.User.ID, g.ID)
+	registerCommands(s, s.State.User.ID, g.ID)
 	log.Printf("discord bot: joined guild %s (%s)", g.Name, g.ID)
 }
 
@@ -206,8 +218,11 @@ const modalPrefix = "create-issue:"
 func (b *bot) onInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	switch i.Type {
 	case discordgo.InteractionApplicationCommand:
-		if i.ApplicationCommandData().Name == commandName {
+		switch i.ApplicationCommandData().Name {
+		case commandName:
 			b.openModal(s, i)
+		case syncCommandName:
+			b.handleSyncCommand(s, i)
 		}
 	case discordgo.InteractionModalSubmit:
 		if strings.HasPrefix(i.ModalSubmitData().CustomID, modalPrefix) {
@@ -304,6 +319,9 @@ func (b *bot) handle(s *discordgo.Session, i *discordgo.InteractionCreate) (stri
 	existing, err := b.store.issueForThread(channel.ID)
 	if err != nil {
 		return "", fmt.Errorf("check for existing issue: %w", err)
+	}
+	if existing != nil && existing.SyncEnabled {
+		return "This thread is mirrored live, so the issue is already up to date.", nil
 	}
 
 	messages, err := collectThread(s, channel.ID, b.cfg.maxThreadMessages)

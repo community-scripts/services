@@ -100,6 +100,13 @@ func (b *bot) worker(queue <-chan webhookEvent) {
 				continue
 			}
 			b.handleIssueEvent(e.Repository.FullName, e.Action, e.Label.Name, e.Issue)
+		case "issue_comment":
+			var e issueCommentEvent
+			if err := json.Unmarshal(ev.Body, &e); err != nil {
+				log.Printf("discord bot: delivery %s: %v", ev.Delivery, err)
+				continue
+			}
+			b.handleIssueComment(e)
 		}
 	}
 }
