@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -30,6 +32,8 @@ type appConfig struct {
 	pocketbaseCollection string
 	maxThreadMessages    int
 	batchWindow          time.Duration
+	webhookSecret        string
+	httpAddr             string
 }
 
 func loadConfig() (appConfig, error) {
@@ -71,6 +75,11 @@ func loadConfig() (appConfig, error) {
 			return cfg, fmt.Errorf("SYNC_BATCH_SECONDS must be a positive integer, got %q", raw)
 		}
 		cfg.batchWindow = time.Duration(n) * time.Second
+	}
+	cfg.webhookSecret = os.Getenv("GITHUB_WEBHOOK_SECRET")
+	cfg.httpAddr = ":8080"
+	if v := os.Getenv("HTTP_ADDR"); v != "" {
+		cfg.httpAddr = v
 	}
 	return cfg, nil
 }
@@ -163,16 +172,53 @@ func main() {
 	session.AddHandler(b.onReady)
 	session.AddHandler(b.onGuildCreate)
 	session.AddHandler(b.onInteraction)
+	session.AddHandler(b.onMessageCreate)
+	session.AddHandler(b.onMessageUpdate)
+	session.AddHandler(b.onMessageDelete)
 
 	if err := session.Open(); err != nil {
 		log.Fatalf("discord bot: open session: %v", err)
 	}
 	defer session.Close()
 
-	log.Println("discord bot: running, press Ctrl+C to stop")
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-	<-stop
+	if len(os.Args) > 1 && os.Args[1] == "backfill" {
+		if err := b.runBackfill(os.Args[2:]); err != nil {
+			log.Fatalf("discord bot: backfill: %v", err)
+		}
+		return
+	}
+
+	b.reloadIndex()
+	queue := make(chan webhookEvent, 256)
+	go b.worker(queue)
+	stop := make(chan struct{})
+	go b.flushLoop(stop)
+	go b.refreshLoop(stop)
+
+	srv := newWebhookServer(cfg.httpAddr, cfg.webhookSecret, queue)
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("discord bot: http: %v", err)
+		}
+	}()
+	if cfg.webhookSecret == "" {
+		log.Println("discord bot: GITHUB_WEBHOOK_SECRET is empty, the issue lifecycle and GitHub→Discord mirroring are off")
+	}
+	log.Printf("discord bot: running, http on %s", cfg.httpAddr)
+
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	<-sig
+
+	close(stop)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Printf("discord bot: http shutdown: %v", err)
+	}
+	for threadID, msgs := range b.batch.due(time.Now().Add(cfg.batchWindow)) {
+		b.flushBatch(threadID, msgs)
+	}
 }
 
 // Guild-scoped registration applies immediately, unlike global commands which

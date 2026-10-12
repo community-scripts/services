@@ -1,8 +1,8 @@
 [
   {
     "id": "pbc_discord_config01",
-    "listRule": null,
-    "viewRule": null,
+    "listRule": "@request.auth.id != \"\"",
+    "viewRule": "@request.auth.id != \"\"",
     "createRule": null,
     "updateRule": null,
     "deleteRule": null,
@@ -82,6 +82,34 @@
         "type": "bool"
       },
       {
+        "autogeneratePattern": "",
+        "hidden": false,
+        "id": "text_dev_repo",
+        "max": 0,
+        "min": 0,
+        "name": "dev_repo",
+        "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+        "presentable": false,
+        "primaryKey": false,
+        "required": false,
+        "system": false,
+        "type": "text"
+      },
+      {
+        "autogeneratePattern": "",
+        "hidden": false,
+        "id": "text_testing_channel",
+        "max": 0,
+        "min": 0,
+        "name": "testing_channel_id",
+        "pattern": "^[0-9]{17,20}$",
+        "presentable": false,
+        "primaryKey": false,
+        "required": false,
+        "system": false,
+        "type": "text"
+      },
+      {
         "hidden": false,
         "id": "autodate812063065",
         "name": "created",
@@ -108,10 +136,10 @@
   },
   {
     "id": "pbc_discord_issues1",
-    "listRule": null,
-    "viewRule": null,
-    "createRule": null,
-    "updateRule": null,
+    "listRule": "@request.auth.id != \"\"",
+    "viewRule": "@request.auth.id != \"\"",
+    "createRule": "@request.auth.id != \"\"",
+    "updateRule": "@request.auth.id != \"\"",
     "deleteRule": null,
     "name": "discord_issues",
     "type": "base",
@@ -252,6 +280,51 @@
       },
       {
         "hidden": false,
+        "id": "select_kind",
+        "maxSelect": 1,
+        "name": "kind",
+        "presentable": false,
+        "required": false,
+        "system": false,
+        "type": "select",
+        "values": ["support", "testing"]
+      },
+      {
+        "autogeneratePattern": "",
+        "hidden": false,
+        "id": "text_slug",
+        "max": 0,
+        "min": 0,
+        "name": "slug",
+        "pattern": "",
+        "presentable": false,
+        "primaryKey": false,
+        "required": false,
+        "system": false,
+        "type": "text"
+      },
+      {
+        "hidden": false,
+        "id": "select_state",
+        "maxSelect": 1,
+        "name": "state",
+        "presentable": false,
+        "required": false,
+        "system": false,
+        "type": "select",
+        "values": ["testing", "hold", "deferred", "migrating", "closed"]
+      },
+      {
+        "hidden": false,
+        "id": "bool_sync_enabled",
+        "name": "sync_enabled",
+        "presentable": false,
+        "required": false,
+        "system": false,
+        "type": "bool"
+      },
+      {
+        "hidden": false,
         "id": "autodate3652986368",
         "name": "created",
         "onCreate": true,
@@ -273,7 +346,101 @@
     ],
     "indexes": [
       "CREATE UNIQUE INDEX `idx_discord_issues_thread` ON `discord_issues` (`thread_id`)",
-      "CREATE INDEX `idx_discord_issues_guild` ON `discord_issues` (`guild_id`)"
+      "CREATE INDEX `idx_discord_issues_guild` ON `discord_issues` (`guild_id`)",
+      "CREATE INDEX `idx_discord_issues_issue` ON `discord_issues` (`repo`, `issue_number`)"
+    ]
+  },
+  {
+    "id": "pbc_discord_sync001",
+    "listRule": "@request.auth.id != \"\"",
+    "viewRule": "@request.auth.id != \"\"",
+    "createRule": "@request.auth.id != \"\"",
+    "updateRule": "@request.auth.id != \"\"",
+    "deleteRule": "@request.auth.id != \"\"",
+    "name": "discord_sync",
+    "type": "base",
+    "system": false,
+    "fields": [
+      {
+        "autogeneratePattern": "[a-z0-9]{15}",
+        "hidden": false,
+        "id": "text3208210256",
+        "max": 15,
+        "min": 15,
+        "name": "id",
+        "pattern": "^[a-z0-9]+$",
+        "presentable": false,
+        "primaryKey": true,
+        "required": true,
+        "system": true,
+        "type": "text"
+      },
+      {
+        "autogeneratePattern": "",
+        "hidden": false,
+        "id": "text_sync_thread",
+        "max": 0,
+        "min": 0,
+        "name": "thread_id",
+        "pattern": "^[0-9]{17,20}$",
+        "presentable": false,
+        "primaryKey": false,
+        "required": true,
+        "system": false,
+        "type": "text"
+      },
+      {
+        "autogeneratePattern": "",
+        "hidden": false,
+        "id": "text_sync_message",
+        "max": 0,
+        "min": 0,
+        "name": "message_id",
+        "pattern": "^[0-9]{17,20}$",
+        "presentable": false,
+        "primaryKey": false,
+        "required": true,
+        "system": false,
+        "type": "text"
+      },
+      {
+        "hidden": false,
+        "id": "number_sync_comment",
+        "max": null,
+        "min": 1,
+        "name": "comment_id",
+        "onlyInt": true,
+        "presentable": false,
+        "required": true,
+        "system": false,
+        "type": "number"
+      },
+      {
+        "hidden": false,
+        "id": "select_sync_origin",
+        "maxSelect": 1,
+        "name": "origin",
+        "presentable": false,
+        "required": true,
+        "system": false,
+        "type": "select",
+        "values": ["discord", "github"]
+      },
+      {
+        "hidden": false,
+        "id": "autodate_sync_created",
+        "name": "created",
+        "onCreate": true,
+        "onUpdate": false,
+        "presentable": false,
+        "system": false,
+        "type": "autodate"
+      }
+    ],
+    "indexes": [
+      "CREATE UNIQUE INDEX `idx_discord_sync_message` ON `discord_sync` (`message_id`)",
+      "CREATE INDEX `idx_discord_sync_comment` ON `discord_sync` (`comment_id`)",
+      "CREATE INDEX `idx_discord_sync_thread` ON `discord_sync` (`thread_id`)"
     ]
   }
 ]

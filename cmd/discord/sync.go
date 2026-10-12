@@ -73,6 +73,24 @@ func (b *bot) reloadIndex() {
 	b.index.replace(recs)
 }
 
+// Rows edited by hand in PocketBase show up without a restart.
+func (b *bot) refreshLoop(stop <-chan struct{}) {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			b.reloadIndex()
+		}
+	}
+}
+
+func mirrorOnNotice(issueURL string) string {
+	return "🔁 Messages in this thread are now mirrored to " + issueURL + " and are public there. A moderator can stop this with `/sync off`."
+}
+
 type pending struct {
 	since time.Time
 	msgs  []*discordgo.Message
@@ -455,7 +473,7 @@ func (b *bot) toggleSync(i *discordgo.InteractionCreate) (string, error) {
 	b.index.set(*rec)
 
 	if on {
-		id, err := b.threads.post(rec.ThreadID, "🔁 Messages in this thread are now mirrored to "+rec.IssueURL+" and are public there. A moderator can stop this with `/sync off`.")
+		id, err := b.threads.post(rec.ThreadID, mirrorOnNotice(rec.IssueURL))
 		if err != nil {
 			return "", err
 		}
