@@ -141,12 +141,13 @@ function updateSignatureTable(signatures) {
   const tbody = document.getElementById('signatureTable');
   if (!tbody) return;
   if (!signatures || signatures.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:24px;">No structured failure signatures in this period (older clients don\'t report the failing command)</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:24px;">No failure signatures in this period (older clients report neither a message nor the failing command)</td></tr>';
     return;
   }
   tbody.innerHTML = signatures.map(s => {
+    const font = s.kind === 'message' ? '' : 'font-family:monospace;font-size:12px;';
     return '<tr>' +
-      '<td style="font-family:monospace;font-size:12px;max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escapeAttr(s.command) + '">' + escapeHtml(s.command) + '</td>' +
+      '<td style="' + font + 'max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escapeAttr(s.command) + '">' + escapeHtml(s.command) + '</td>' +
       '<td><strong style="color:var(--accent-red);">' + s.count.toLocaleString() + '</strong></td>' +
       '<td>' + (s.top_exit_code ? '<span class="exit-code err">' + s.top_exit_code + '</span>' : '-') + '</td>' +
       '<td>' + s.unique_apps + '</td>' +
@@ -191,9 +192,9 @@ function filterAppTable() {
     const failRateColor = a.failure_rate > 50 ? 'var(--accent-red)' : a.failure_rate > 20 ? 'var(--accent-orange)' : 'var(--accent-yellow)';
     const topCat = a.top_category ? '<span class="category-badge ' + a.top_category + '">' + escapeHtml(a.top_category) + '</span>' : '-';
     const errorId = 'err-app-' + idx;
-    const shortError = escapeHtml((a.top_error || '-').substring(0, 120));
+    const shortError = escapeHtml((a.top_message || a.top_error || '-').substring(0, 120));
     const fullError = escapeHtml(a.top_error || '-');
-    const isLong = (a.top_error || '').length > 120;
+    const isLong = a.top_message ? !!a.top_error : (a.top_error || '').length > 120;
     return '<tr>' +
       '<td><strong>' + escapeHtml(a.app) + '</strong></td>' +
       '<td><span class="type-badge ' + typeClass + '">' + (a.type || '-').toUpperCase() + '</span></td>' +
@@ -244,21 +245,39 @@ function parseErrorText(raw) {
   return { header: header, trace: trace };
 }
 
-// errorSummary extracts the human-readable part of the header:
-// "exit_code=1 | General error | at line 42: npm run build" → "General error — at line 42: npm run build"
+// "exit_code=N | explanation | step: … | in fn | at line L: cmd"; v1/v2 headers have fewer segments.
+function parseErrorHeader(header) {
+  const out = { explanation: '', step: '', fn: '', at: '' };
+  if (!/^exit_code=\d+/.test(header || '')) return out;
+  const atIdx = header.indexOf('| at line ');
+  if (atIdx !== -1) {
+    out.at = header.substring(atIdx + 2).trim();
+    header = header.substring(0, atIdx);
+  }
+  const rest = [];
+  header.split('|').slice(1).forEach(function(seg) {
+    seg = seg.trim();
+    if (!seg) return;
+    if (seg.indexOf('step: ') === 0) out.step = seg.substring(6);
+    else if (/^in [\w:.-]+$/.test(seg)) out.fn = seg.substring(3);
+    else rest.push(seg);
+  });
+  out.explanation = rest.join(' — ');
+  return out;
+}
+
+// errorSummary: "exit_code=1 | General error | at line 42: npm run build" → "General error — at line 42: npm run build"
 function errorSummary(raw) {
   const parsed = parseErrorText(raw);
   if (!parsed.header) return '-';
-  const parts = parsed.header.split('|').map(function(s) { return s.trim(); });
-  // Drop the leading "exit_code=N" (the table already has an Exit Code column)
-  if (parts.length > 1 && /^exit_code=\d+$/.test(parts[0])) parts.shift();
-  return parts.join(' — ');
+  const h = parseErrorHeader(parsed.header);
+  return [h.explanation, h.at].filter(Boolean).join(' — ') || parsed.header;
 }
 
 function filterRecentTable() {
   const filter = (document.getElementById('recentFilter')?.value || '').toLowerCase();
   const errors = filter
-    ? allRecentErrors.filter(e => (e.nsapp || '').toLowerCase().includes(filter) || (e.error || '').toLowerCase().includes(filter))
+    ? allRecentErrors.filter(e => [e.nsapp, e.error, e.error_message, e.error_step].some(v => (v || '').toLowerCase().includes(filter)))
     : allRecentErrors;
 
   const tbody = document.getElementById('recentErrorTable');
@@ -272,7 +291,7 @@ function filterRecentTable() {
     const codeClass = e.exit_code === 0 ? 'ok' : 'err';
     const catClass = (e.error_category || 'unknown').replace(/ /g, '_');
     const os = e.os_type ? e.os_type + (e.os_version ? ' ' + e.os_version : '') : '-';
-    const summary = errorSummary(e.error);
+    const summary = e.error_message || errorSummary(e.error);
     const origIdx = allRecentErrors.indexOf(e);
     return '<tr class="clickable-row" onclick="showErrorDetail(' + origIdx + ')" style="cursor:pointer;">' +
       '<td><span class="status-badge ' + statusClass + '">' + escapeHtml(e.status) + '</span></td>' +
@@ -294,6 +313,7 @@ function showErrorDetail(idx) {
   const e = allRecentErrors[idx];
   if (!e) return;
   const parsed = parseErrorText(e.error);
+  const h = parseErrorHeader(parsed.header);
   const os = e.os_type ? e.os_type + (e.os_version ? ' ' + e.os_version : '') : '—';
 
   document.getElementById('errorDetailTitle').textContent = e.nsapp + ' — exit ' + e.exit_code;
@@ -310,13 +330,22 @@ function showErrorDetail(idx) {
   html += '<div><span class="dm-label">' + (e.platform === 'incus' ? 'Incus' : 'PVE') + ' Version</span><span>' + escapeHtml(e.pve_version || '—') + '</span></div>';
   html += '<div><span class="dm-label">Duration</span><span>' + formatDuration(e.install_duration) + '</span></div>';
   html += '<div><span class="dm-label">Time</span><span>' + formatTimestamp(e.created) + '</span></div>';
+  const step = e.error_step || h.step;
+  const fn = e.failed_function || h.fn;
+  if (step) html += '<div><span class="dm-label">Step</span><span>' + escapeHtml(step) + '</span></div>';
+  if (e.error_phase) html += '<div><span class="dm-label">Phase</span><span>' + escapeHtml(e.error_phase) + '</span></div>';
+  if (fn) html += '<div><span class="dm-label">Function</span><span style="font-family:monospace;font-size:12px;">' + escapeHtml(fn) + '</span></div>';
   if (e.execution_id) {
     html += '<div style="grid-column:1/-1;"><span class="dm-label">Execution ID</span><span style="font-family:monospace;font-size:11px;">' + escapeHtml(e.execution_id) + '</span></div>';
   }
+  if (e.error_message && parsed.header) {
+    html += '<div style="grid-column:1/-1;"><span class="dm-label">Header</span><span style="font-family:monospace;font-size:11px;word-break:break-word;">' + escapeHtml(parsed.header) + '</span></div>';
+  }
   html += '</div>';
 
-  if (parsed.header) {
-    html += '<div class="error-header-line">' + escapeHtml(parsed.header) + '</div>';
+  const headline = e.error_message || parsed.header;
+  if (headline) {
+    html += '<div class="error-header-line">' + escapeHtml(headline) + '</div>';
   }
 
   if (parsed.trace) {

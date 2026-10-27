@@ -730,7 +730,7 @@ function showRecordDetail(index) {
   html += '</div>';
 
   // ── Error Section (if failed) ──
-  if (record.error) {
+  if (record.error || record.error_message) {
     html += '<div class="detail-section">';
     html += '<div class="detail-section-header"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg> Error Details</div>';
     html += renderErrorSection(record);
@@ -817,18 +817,34 @@ function renderErrorSection(record) {
     }
   }
 
-  // Error category badge
-  if (record.error_category) {
+  var h = parseErrorHeader(headerLine);
+  var headline = record.error_message || h.explanation || headerLine;
+
+  if (record.error_category || headline) {
     html += '<div class="error-category-row">';
-    html += '<span class="error-category-badge">' + escapeHtml(record.error_category) + '</span>';
-    if (headerLine) {
-      html += '<span class="error-explanation">' + escapeHtml(headerLine) + '</span>';
+    if (record.error_category) {
+      html += '<span class="error-category-badge">' + escapeHtml(record.error_category) + '</span>';
+    }
+    if (headline) {
+      html += '<span class="error-explanation">' + escapeHtml(headline) + '</span>';
     }
     html += '</div>';
-  } else if (headerLine) {
-    html += '<div class="error-category-row">';
-    html += '<span class="error-explanation">' + escapeHtml(headerLine) + '</span>';
-    html += '</div>';
+  }
+
+  var command = record.failed_command
+    ? (record.failed_line ? 'at line ' + record.failed_line + ': ' : '') + record.failed_command
+    : h.at;
+  var details = [
+    ['Exit code meaning', record.error_message ? h.explanation : ''],
+    ['Step', record.error_step || h.step],
+    ['Phase', record.error_phase],
+    ['Function', record.failed_function || h.fn],
+    ['Command', command]
+  ].filter(function(d) { return d[1]; });
+  if (details.length) {
+    html += '<div class="detail-grid" style="margin-bottom:12px;">' + details.map(function(d) {
+      return buildDetailItem(d[0], d[1], d[0] === 'Command' || d[0] === 'Function' ? 'mono' : null);
+    }).join('') + '</div>';
   }
 
   // Error trace / log
@@ -837,7 +853,7 @@ function renderErrorSection(record) {
     html += '<span>Error Trace</span>';
     html += '<button class="btn-copy-trace" onclick="copyErrorTrace(this)" title="Copy to clipboard"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg> Copy</button>';
     html += '</div>';
-    html += '<pre class="error-trace-box" data-trace="' + escapeAttr(traceLines) + '">' + escapeHtml(traceLines) + '</pre>';
+    html += '<pre class="error-trace-box" data-trace="' + escapeAttr(raw) + '">' + escapeHtml(traceLines) + '</pre>';
   } else if (!headerLine && raw) {
     // Raw unstructured error — show as-is
     html += '<div class="error-trace-header"><span>Raw Error</span></div>';
@@ -847,6 +863,27 @@ function renderErrorSection(record) {
   }
 
   return html;
+}
+
+// "exit_code=N | explanation | step: … | in fn | at line L: cmd"; v1/v2 headers have fewer segments.
+function parseErrorHeader(header) {
+  var out = { explanation: '', step: '', fn: '', at: '' };
+  if (!/^exit_code=\d+/.test(header || '')) return out;
+  var atIdx = header.indexOf('| at line ');
+  if (atIdx !== -1) {
+    out.at = header.substring(atIdx + 2).trim();
+    header = header.substring(0, atIdx);
+  }
+  var rest = [];
+  header.split('|').slice(1).forEach(function(seg) {
+    seg = seg.trim();
+    if (!seg) return;
+    if (seg.indexOf('step: ') === 0) out.step = seg.substring(6);
+    else if (/^in [\w:.-]+$/.test(seg)) out.fn = seg.substring(3);
+    else rest.push(seg);
+  });
+  out.explanation = rest.join(' — ');
+  return out;
 }
 
 function copyErrorTrace(btn) {

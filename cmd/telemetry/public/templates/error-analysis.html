@@ -146,19 +146,19 @@
             </div>
         </div>
 
-        <!-- Failure Signatures (grouped by failing command) -->
+        <!-- Failure Signatures (grouped by error message, else failing command) -->
         <div class="section-card">
             <div class="section-header">
                 <div>
-                    <h2>Top Failing Commands</h2>
-                    <p>Failures grouped by the exact command that failed — the fastest way to spot a broken script step.</p>
+                    <h2>Top Failure Signatures</h2>
+                    <p>Failures grouped by what went wrong, or by the command that failed for older reports — the fastest way to spot a broken script step.</p>
                 </div>
             </div>
             <div class="table-wrapper">
                 <table>
                     <thead>
                         <tr>
-                            <th>Command</th>
+                            <th>Failure</th>
                             <th>Failures</th>
                             <th>Top Exit Code</th>
                             <th>Apps</th>
@@ -332,6 +332,6 @@
         </div>
     </div>
 
-    <script src="/static/js/error-analysis.js?v=3"></script>
+    <script src="/static/js/error-analysis.js?v=4"></script>
 </body>
 </html>
