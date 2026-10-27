@@ -690,9 +690,9 @@ var (
 	}{
 		// --- Generic / Shell ---
 		0:  {"Cancelled before completion (no error)", ""},
-		1:  {"General error / Operation not permitted", "unknown"},
-		2:  {"Misuse of shell builtins (e.g. syntax error)", "unknown"},
-		3:  {"General syntax or argument error", "unknown"},
+		1:  {"General error", "unknown"},
+		2:  {"Invalid usage or arguments", "unknown"},
+		3:  {"Command-specific error", "unknown"},
 		10: {"Docker / privileged mode required (unsupported environment)", "config"},
 		// --- curl / wget errors ---
 		4:  {"curl: Feature not supported or protocol error", "unknown"},
@@ -751,7 +751,7 @@ var (
 		112: {"Proxmox: Invalid install menu option", "config"},
 		113: {"LXC: Under-provisioned — user aborted update", "user_aborted"},
 		114: {"LXC: Storage too low — user aborted update", "user_aborted"},
-		115: {"Download: install.func download failed or incomplete", "network"},
+		115: {"Engine or install script could not be downloaded", "network"},
 		116: {"Proxmox: Default bridge vmbr0 not found", "config"},
 		117: {"LXC: Container did not reach running state", "proxmox"},
 		118: {"LXC: No IP assigned to container after timeout", "timeout"},
@@ -761,7 +761,7 @@ var (
 		122: {"LXC: No internet connectivity — user declined to continue", "user_aborted"},
 		123: {"LXC: Local IP detection failed", "network"},
 		// --- BSD sysexits.h (64-78) ---
-		64: {"Usage error (wrong arguments)", "config"},
+		64: {"Missing or invalid input (a required setting was not given)", "config"},
 		65: {"Data format error (bad input data)", "unknown"},
 		66: {"Input file not found (cannot open input)", "unknown"},
 		67: {"User not found (addressee unknown)", "unknown"},

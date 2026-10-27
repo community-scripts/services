@@ -180,3 +180,18 @@ func TestV3HeaderIsNotEvidence(t *testing.T) {
 		})
 	}
 }
+
+func TestExitCodeDescriptionsMirrorTheEngine(t *testing.T) {
+	want := map[int]string{
+		1:   "General error",
+		2:   "Invalid usage or arguments",
+		3:   "Command-specific error",
+		64:  "Missing or invalid input (a required setting was not given)",
+		115: "Engine or install script could not be downloaded",
+	}
+	for code, desc := range want {
+		if got := getExitCodeDescription(code); got != desc {
+			t.Errorf("exit %d = %q, want %q", code, got, desc)
+		}
+	}
+}
