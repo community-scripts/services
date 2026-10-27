@@ -83,6 +83,9 @@ type Config struct {
 	GitHubOwner   string // Repository owner (e.g., "community-scripts")
 	GitHubRepo    string // Repository name (e.g., "ProxmoxVE")
 	AdminPassword string // Password to protect admin actions (issue creation)
+
+	// AdminToken guards /api/admin/*; unset disables those endpoints.
+	AdminToken string
 }
 
 // TelemetryIn matches payload from api.func (bash client)
@@ -1572,11 +1575,12 @@ func main() {
 		GitHubOwner:   env("GITHUB_OWNER", "community-scripts"),
 		GitHubRepo:    env("GITHUB_REPO", "ProxmoxVE"),
 		AdminPassword: env("ADMIN_PASSWORD", ""),
+		AdminToken:    env("TELEMETRY_ADMIN_TOKEN", ""),
 	}
 
 	// Debug: log whether critical env vars are set (not the values!)
-	log.Printf("CONFIG: ADMIN_PASSWORD set=%v (len=%d), GITHUB_TOKEN set=%v, GITHUB_OWNER=%s, GITHUB_REPO=%s",
-		cfg.AdminPassword != "", len(cfg.AdminPassword), cfg.GitHubToken != "", cfg.GitHubOwner, cfg.GitHubRepo)
+	log.Printf("CONFIG: ADMIN_PASSWORD set=%v (len=%d), TELEMETRY_ADMIN_TOKEN set=%v, GITHUB_TOKEN set=%v, GITHUB_OWNER=%s, GITHUB_REPO=%s",
+		cfg.AdminPassword != "", len(cfg.AdminPassword), cfg.AdminToken != "", cfg.GitHubToken != "", cfg.GitHubOwner, cfg.GitHubRepo)
 
 	var pt *ProxyTrust
 	if strings.TrimSpace(env("TRUSTED_PROXIES_CIDR", "")) != "" {
@@ -2390,6 +2394,8 @@ func main() {
 			"message": fmt.Sprintf("Cleaned up %d stuck installations", updated),
 		})
 	})
+
+	mux.HandleFunc("/api/admin/migrate-script", migrateScriptHandler(cfg.AdminToken, ch, cache.InvalidateDashboard))
 
 	// GitHub Issue creation API
 	mux.HandleFunc("/api/github/create-issue", func(w http.ResponseWriter, r *http.Request) {
