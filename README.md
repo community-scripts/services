@@ -16,7 +16,7 @@ Each builds its own binary and its own image; they share nothing but the module.
 
 ## Brand assets
 
-The approved CS Amber mark is shared by all four telemetry dashboard views and
+The approved CS Amber mark is shared by all three telemetry dashboard views and
 their favicons. The editable [SVG master](cmd/telemetry/public/static/img/logo.svg)
 and its 512px [PNG avatar](cmd/telemetry/public/static/img/logo.png) are embedded
 in the telemetry binary. Brand images bypass the monochrome SVG icon inliner

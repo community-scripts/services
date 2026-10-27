@@ -195,7 +195,7 @@ func (c *Cache) Delete(ctx context.Context, key string) error {
 
 // InvalidateDashboard clears the cached pages of every dashboard
 func (c *Cache) InvalidateDashboard(ctx context.Context) {
-	prefixes := []string{"dashboard:", "scripts:", "errors:", "new:", "scriptdetail:"}
+	prefixes := []string{"dashboard:", "scripts:", "errors:", "scriptdetail:"}
 	if c.useRedis {
 		for _, prefix := range prefixes {
 			iter := c.redis.Scan(ctx, 0, prefix+"*", 100).Iterator()

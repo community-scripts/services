@@ -122,13 +122,3 @@ func TestIngestDerivesMessageOnlyWhenMissing(t *testing.T) {
 		t.Errorf("aborted run got message %q", in.ErrorMessage)
 	}
 }
-
-func TestOutputTailSQLKeepsEscapes(t *testing.T) {
-	q := outputTailSQL("final_err")
-	if strings.Contains(q, "\n---\n") || !strings.Contains(q, `'\n---\n'`) {
-		t.Errorf("separator must reach ClickHouse as an escape:\n%s", q)
-	}
-	if strings.Contains(q, "%!") {
-		t.Errorf("format verb left unconsumed:\n%s", q)
-	}
-}
