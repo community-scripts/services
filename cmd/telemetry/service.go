@@ -642,16 +642,8 @@ var (
 	// Allowed values for 'status' field
 	allowedStatus = map[string]bool{"installing": true, "validation": true, "configuring": true, "success": true, "failed": true, "aborted": true, "unknown": true}
 
-	// Allowed values for 'os_type' field
-	allowedOsType = map[string]bool{
-		"debian": true, "ubuntu": true, "alpine": true, "devuan": true,
-		"fedora": true, "rocky": true, "alma": true, "centos": true,
-		"opensuse": true, "gentoo": true, "openeuler": true,
-		// VM-specific OS types
-		"homeassistant": true, "opnsense": true, "openwrt": true,
-		"mikrotik": true, "umbrel-os": true, "pimox-haos": true,
-		"owncloud": true, "turnkey-nextcloud": true, "arch-linux": true,
-	}
+	// Shape of 'os_type'. The engine also builds from the linuxcontainers.org catalog, so no fixed list.
+	osTypeRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,31}$`)
 
 	// Allowed values for 'gpu_vendor' field
 	allowedGPUVendor = map[string]bool{"intel": true, "amd": true, "nvidia": true, "unknown": true, "": true}
@@ -1434,12 +1426,13 @@ func validate(in *TelemetryIn) error {
 	isUpdate := in.Status != "installing"
 
 	// os_type: normalize "-" (used by VM scripts for "not applicable") to empty
+	in.OsType = strings.ToLower(in.OsType)
 	if in.OsType == "-" || in.OsType == "none" {
 		in.OsType = ""
 	}
-	// os_type is optional but if provided must be valid (only for lxc/vm)
-	if (in.Type == "lxc" || in.Type == "vm") && in.OsType != "" && !allowedOsType[in.OsType] {
-		return errors.New("invalid os_type")
+	if in.OsType != "" && !osTypeRe.MatchString(in.OsType) {
+		log.Printf("[WARN] malformed os_type %q from nsapp=%s, dropping it", in.OsType, in.NSAPP)
+		in.OsType = ""
 	}
 
 	// method is optional and flexible - just sanitized, no strict validation

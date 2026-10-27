@@ -63,3 +63,27 @@ bad "quote" here",
 		t.Errorf("error = %q", in.Error)
 	}
 }
+
+func TestValidateNeverRejectsOverOsType(t *testing.T) {
+	cases := map[string]string{
+		"kali":        "kali",
+		"ArchLinux":   "archlinux",
+		"amazonlinux": "amazonlinux",
+		"nixos":       "nixos",
+		"umbrel-os":   "umbrel-os",
+		"-":           "",
+		"rm -rf /":    "",
+		"../etc":      "",
+	}
+	for _, typ := range []string{"lxc", "vm", "addon"} {
+		for os, want := range cases {
+			in := TelemetryIn{RandomID: "r", Type: typ, NSAPP: "x", Status: "installing", OsType: os}
+			if err := validate(&in); err != nil {
+				t.Errorf("%s os_type %q rejected: %v", typ, os, err)
+			}
+			if in.OsType != want {
+				t.Errorf("%s os_type %q = %q, want %q", typ, os, in.OsType, want)
+			}
+		}
+	}
+}
