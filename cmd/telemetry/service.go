@@ -1071,8 +1071,8 @@ func sanitizeMultiLine(s string, max int) string {
 	return s
 }
 
-// ipv4Re matches IPv4 addresses (e.g. 192.168.1.100) for GDPR anonymization.
-var ipv4Re = regexp.MustCompile(`(\d{1,3}\.)\d{1,3}\.\d{1,3}`)
+// ipv4Re matches four-octet IPv4 addresses only, so version strings like 0.9.5 survive.
+var ipv4Re = regexp.MustCompile(`\b(\d{1,3})\.\d{1,3}\.\d{1,3}\.\d{1,3}\b`)
 
 // numericFieldSuffixRe matches JSON numeric fields with unit suffixes like 32G, 100M.
 // Captures: "field_name": 123G â†’ replace with "field_name": 123
@@ -1257,12 +1257,12 @@ func rescueBrokenJSON(raw []byte) (TelemetryIn, error) {
 }
 
 // sanitizeIPs anonymizes IPv4 addresses in log text for GDPR compliance.
-// Keeps the first octet visible for debugging (e.g. "192.x.x"), strips the rest.
+// Keeps the first octet visible for debugging (e.g. "192.x.x.x"), strips the rest.
 func sanitizeIPs(s string) string {
 	if s == "" {
 		return s
 	}
-	return ipv4Re.ReplaceAllString(s, "${1}x.x")
+	return ipv4Re.ReplaceAllString(s, "${1}.x.x.x")
 }
 
 func validate(in *TelemetryIn) error {
@@ -1297,7 +1297,7 @@ func validate(in *TelemetryIn) error {
 	in.KernelVersion = sanitizeShort(in.KernelVersion, 64)
 	in.AppVersion = sanitizeShort(in.AppVersion, 64)
 	// Long enough for a real command, short enough to group on.
-	in.FailedCommand = sanitizeShort(in.FailedCommand, 512)
+	in.FailedCommand = sanitizeShort(sanitizeIPs(in.FailedCommand), 512)
 	if in.FailedLine < 0 || in.FailedLine > 1_000_000 {
 		in.FailedLine = 0
 	}
@@ -1349,7 +1349,7 @@ func validate(in *TelemetryIn) error {
 	}
 
 	// Allow longer error text to capture full installation log + anonymize IPs (GDPR)
-	in.Error = sanitizeIPs(sanitizeMultiLine(in.Error, 131072))
+	in.Error = sanitizeMultiLine(sanitizeIPs(in.Error), 131072)
 
 	// Required fields for all requests
 	if in.RandomID == "" || in.Type == "" || in.NSAPP == "" || in.Status == "" {
