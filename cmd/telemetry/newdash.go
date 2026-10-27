@@ -608,10 +608,10 @@ func (ch *CHClient) FetchNewDashboard(
 	add("signatures", func(ctx context.Context) error {
 		rows, err := ch.db.QueryContext(ctx, fmt.Sprintf(`
 		SELECT final_cat, final_exit,
-		       substring(if(failcmd != '', failcmd, final_err), 1, 200) msg,
+		       substring(multiIf(final_msg != '', final_msg, failcmd != '', failcmd, final_err), 1, 200) msg,
 		       count() c, uniqExact(app) apps
 		FROM (%s)
-		WHERE outcome IN ('failed','blocked') AND final_err != ''
+		WHERE outcome IN ('failed','blocked') AND (final_msg != '' OR final_err != '')
 		GROUP BY final_cat, final_exit, msg
 		ORDER BY c DESC
 		LIMIT 30`, runs), args...)

@@ -144,9 +144,10 @@ type ErrorAnalysisData struct {
 	Signatures      []ErrorSignature     `json:"signatures"` // grouped by failing command
 }
 
-// ErrorSignature groups failures by the exact command that failed (extracted
-// from the structured error header "… | at line L: <command>").
+// ErrorSignature groups failures by error_message (Kind "message") or, for rows
+// without one, by the failing command from the error header (Kind "command").
 type ErrorSignature struct {
+	Kind        string `json:"kind"`
 	Command     string `json:"command"`
 	Count       int    `json:"count"`
 	TopExitCode int    `json:"top_exit_code"`
