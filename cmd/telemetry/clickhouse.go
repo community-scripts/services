@@ -855,16 +855,18 @@ func pipelineJSON(steps []pipelineStep) string {
 //  CLEANUP (stuck installing + retention)
 // ══════════════════════════════════════════════════════════════
 
+// stuckRunsSQL selects runs of the last 30 days that never sent a result and
+// have been silent for stuckHours. The first row is the one with metadata.
+const stuckRunsSQL = `
+	SELECT argMin(id, created) AS s_id, any(nsapp), toString(min(created))
+	FROM telemetry_db.telemetry
+	WHERE created >= now() - INTERVAL 30 DAY
+	GROUP BY ` + runKeyExpr + `
+	HAVING countIf(status IN ('success','failed','aborted','unknown')) = 0
+	   AND max(created) < now() - INTERVAL ? HOUR`
+
 func (ch *CHClient) FindStuckInstallations(ctx context.Context, stuckHours int) ([]StuckRecord, error) {
-	rows, err := ch.db.QueryContext(ctx, `
-		SELECT id, nsapp, toString(created)
-		FROM telemetry_db.telemetry
-		WHERE status IN ('installing','validation','configuring')
-		  AND created < now() - INTERVAL ? HOUR
-		  AND (execution_id = '' OR execution_id NOT IN (
-			SELECT execution_id FROM telemetry_db.telemetry
-			WHERE status IN ('success','failed','aborted','unknown') AND execution_id != ''))
-		ORDER BY created LIMIT 500`, stuckHours)
+	rows, err := ch.db.QueryContext(ctx, stuckRunsSQL+"\n\tORDER BY min(created) LIMIT 500", stuckHours)
 	if err != nil {
 		return nil, err
 	}
@@ -952,13 +954,6 @@ func (ch *CHClient) DeleteOrphanTerminals(ctx context.Context, sinceDays int) er
 
 func (ch *CHClient) GetStuckCount(ctx context.Context, stuckHours int) (int, error) {
 	var cnt uint64
-	err := ch.db.QueryRowContext(ctx, `
-		SELECT count() FROM telemetry_db.telemetry
-		WHERE status IN ('installing','validation','configuring')
-		  AND created < now() - INTERVAL ? HOUR
-		  AND (execution_id = '' OR execution_id NOT IN (
-			SELECT execution_id FROM telemetry_db.telemetry
-			WHERE status IN ('success','failed','aborted','unknown') AND execution_id != ''))`,
-		stuckHours).Scan(&cnt)
+	err := ch.db.QueryRowContext(ctx, "SELECT count() FROM ("+stuckRunsSQL+")", stuckHours).Scan(&cnt)
 	return int(cnt), err
 }

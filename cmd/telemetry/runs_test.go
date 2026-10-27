@@ -447,3 +447,13 @@ func TestDailyStatsAreDense(t *testing.T) {
 		t.Errorf("%+v", got)
 	}
 }
+
+func TestStuckRunsAreRunsWithoutAnyResult(t *testing.T) {
+	q := stuckRunsSQL
+	if !strings.Contains(q, "GROUP BY "+runKeyExpr) || !strings.Contains(q, "argMin(id, created)") {
+		t.Errorf("one row per run, the first one:\n%s", q)
+	}
+	if !strings.Contains(q, "countIf(status IN ('success','failed','aborted','unknown')) = 0") || placeholderCount(q) != 1 {
+		t.Errorf("a run with any result is not stuck:\n%s", q)
+	}
+}

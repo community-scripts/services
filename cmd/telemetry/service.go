@@ -2019,8 +2019,16 @@ func main() {
 			orphans = -1
 		}
 
+		runs, runsErr := ch.FetchStuckRuns(ctx, RunFilter{Type: "all"}, cleaner.cfg.StuckAfterHours)
+		if runsErr != nil {
+			log.Printf("WARN: cleanup/status - stuck runs failed: %v", runsErr)
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
+			"running":            runs.Running,
+			"stalled":            runs.Stalled,
+			"no_result_24h":      runs.NoResult,
 			"stuck_count":        count,
 			"stuck_after_hours":  cleaner.cfg.StuckAfterHours,
 			"check_interval":     cleaner.cfg.CheckInterval.String(),
