@@ -57,6 +57,10 @@ const runsCTE = `
 		any(payload_version)                           AS pver,
 		argMax(failed_command, created)                AS failcmd,
 		argMax(failed_line, created)                   AS failline,
+		argMax(failed_function, created)               AS failfunc,
+		argMax(error_message, created)                 AS final_msg,
+		argMax(error_step, created)                    AS final_step,
+		argMax(error_phase, created)                   AS final_phase,
 		any(kernel_version)                            AS kernelver,
 		any(app_version)                               AS appver,
 		any(cpu_model)                                 AS cpumodel,
@@ -209,6 +213,10 @@ type NewRecentRun struct {
 	GPUPassthrough string `json:"gpu_passthrough"`
 	RAMSpeed       string `json:"ram_speed"`
 	PayloadVersion int    `json:"payload_version"`
+	ErrorMessage   string `json:"error_message"`
+	ErrorStep      string `json:"error_step"`
+	ErrorPhase     string `json:"error_phase"`
+	FailedFunction string `json:"failed_function"`
 }
 
 // NewDailyPoint is one day of the trend, on the same run basis as the rest.
@@ -655,7 +663,8 @@ func (ch *CHClient) FetchNewDashboard(
 		       substring(failcmd, 1, 400), failline,
 		       if(cpuarch != '', cpuarch, if(arm = 1, 'arm64', '')),
 		       kernelver, appver, cpu, cpumodel, gpu, gpumodel, gpupass,
-		       ramspeed, pver
+		       ramspeed, pver,
+		       final_msg, final_step, final_phase, failfunc
 		FROM (%s)
 		ORDER BY last_seen DESC
 		LIMIT 300`, osExpr, runs), args...)
@@ -672,7 +681,8 @@ func (ch *CHClient) FetchNewDashboard(
 				&r.FailedCommand, &r.FailedLine, &r.Arch,
 				&r.KernelVersion, &r.AppVersion, &r.CPUVendor, &r.CPUModel,
 				&r.GPUVendor, &r.GPUModel, &r.GPUPassthrough,
-				&r.RAMSpeed, &r.PayloadVersion) == nil {
+				&r.RAMSpeed, &r.PayloadVersion,
+				&r.ErrorMessage, &r.ErrorStep, &r.ErrorPhase, &r.FailedFunction) == nil {
 				// ct_type 1 is unprivileged, so privileged is the other case.
 				r.Privileged = priv != 1
 				d.Recent = append(d.Recent, r)

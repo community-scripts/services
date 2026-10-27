@@ -162,6 +162,12 @@ type TelemetryIn struct {
 	// anything transmitted them.
 	KernelVersion string `json:"kernel_version,omitempty"`
 	AppVersion    string `json:"app_version,omitempty"`
+
+	// Payload version 3: what failed, in which step, on which side, in which function.
+	ErrorMessage   string `json:"error_message,omitempty"`
+	ErrorStep      string `json:"error_step,omitempty"`
+	ErrorPhase     string `json:"error_phase,omitempty"`
+	FailedFunction string `json:"failed_function,omitempty"`
 }
 
 // TelemetryOut is the output shape for telemetry records
@@ -214,6 +220,12 @@ type TelemetryOut struct {
 	FailedLine     int    `json:"failed_line,omitempty"`
 	KernelVersion  string `json:"kernel_version,omitempty"`
 	AppVersion     string `json:"app_version,omitempty"`
+
+	ErrorMessage   string `json:"error_message,omitempty"`
+	ErrorStep      string `json:"error_step,omitempty"`
+	ErrorPhase     string `json:"error_phase,omitempty"`
+	FailedFunction string `json:"failed_function,omitempty"`
+	MigratedFrom   string `json:"migrated_from,omitempty"`
 }
 
 // TelemetryStatusUpdate contains only fields needed for status updates
@@ -1052,7 +1064,7 @@ func sanitizeShort(s string, max int) string {
 	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.ReplaceAll(s, "\r", " ")
 	if len(s) > max {
-		s = s[:max]
+		s = strings.ToValidUTF8(s[:max], "")
 	}
 	return s
 }
@@ -1196,6 +1208,10 @@ func rescueBrokenJSON(raw []byte) (TelemetryIn, error) {
 	in.FailedCommand = strField("failed_command")
 	in.KernelVersion = strField("kernel_version")
 	in.AppVersion = strField("app_version")
+	in.ErrorPhase = strField("error_phase")
+	in.FailedFunction = strField("failed_function")
+	in.ErrorMessage = escapedStrField(s, "error_message")
+	in.ErrorStep = escapedStrField(s, "error_step")
 
 	in.CTType = intField("ct_type")
 	in.DiskSize = intField("disk_size")
@@ -1220,7 +1236,8 @@ func rescueBrokenJSON(raw []byte) (TelemetryIn, error) {
 		valueStart := eloc[1]
 		// Find the boundary: the next known field after "error"
 		// Pattern in the JSON: ...error content...",\n    "error_category": "..."
-		boundaryFields := []string{"error_category", "install_duration", "cpu_vendor", "gpu_vendor", "ram_speed", "repo_source"}
+		boundaryFields := []string{"error_category", "error_message", "error_step", "error_phase", "failed_function",
+			"install_duration", "cpu_vendor", "gpu_vendor", "ram_speed", "repo_source"}
 		endPos := -1
 		for _, field := range boundaryFields {
 			re := regexp.MustCompile(`",?\s*\n\s*"` + regexp.QuoteMeta(field) + `"`)
@@ -1254,6 +1271,20 @@ func rescueBrokenJSON(raw []byte) (TelemetryIn, error) {
 	}
 
 	return in, nil
+}
+
+// escapedStrField extracts a JSON string value that may contain escaped quotes.
+func escapedStrField(s, name string) string {
+	re := regexp.MustCompile(`"` + regexp.QuoteMeta(name) + `"\s*:\s*"((?:[^"\\]|\\.)*)"`)
+	m := re.FindStringSubmatch(s)
+	if len(m) < 2 {
+		return ""
+	}
+	var v string
+	if json.Unmarshal([]byte(`"`+m[1]+`"`), &v) == nil {
+		return v
+	}
+	return m[1]
 }
 
 // sanitizeIPs anonymizes IPv4 addresses in log text for GDPR compliance.
@@ -1300,6 +1331,15 @@ func validate(in *TelemetryIn) error {
 	in.FailedCommand = sanitizeShort(sanitizeIPs(in.FailedCommand), 512)
 	if in.FailedLine < 0 || in.FailedLine > 1_000_000 {
 		in.FailedLine = 0
+	}
+
+	in.ErrorMessage = sanitizeShort(sanitizeIPs(in.ErrorMessage), 300)
+	in.ErrorStep = sanitizeShort(sanitizeIPs(in.ErrorStep), 120)
+	in.FailedFunction = sanitizeShort(in.FailedFunction, 64)
+	in.ErrorPhase = strings.ToLower(sanitizeShort(in.ErrorPhase, 16))
+	if in.ErrorPhase != "" && in.ErrorPhase != "host" && in.ErrorPhase != "container" {
+		log.Printf("[WARN] unknown error_phase %q from nsapp=%s, dropping it", in.ErrorPhase, in.NSAPP)
+		in.ErrorPhase = ""
 	}
 	// A version the server has never heard of is more likely a typo or a probe
 	// than a client from the future.
@@ -2491,6 +2531,7 @@ func main() {
 			in.Status = "success"
 			in.Error = ""
 			in.ErrorCategory = ""
+			in.ErrorMessage, in.ErrorPhase, in.FailedFunction = "", "", ""
 			if cfg.EnableReqLogging {
 				log.Printf("auto-reclassified exit_code=0 as success: nsapp=%s", in.NSAPP)
 			}
@@ -2572,6 +2613,10 @@ func main() {
 			FailedLine:      in.FailedLine,
 			KernelVersion:   in.KernelVersion,
 			AppVersion:      in.AppVersion,
+			ErrorMessage:    in.ErrorMessage,
+			ErrorStep:       in.ErrorStep,
+			ErrorPhase:      in.ErrorPhase,
+			FailedFunction:  in.FailedFunction,
 		}
 
 		// Enqueue for async PB write (decoupled from HTTP response)

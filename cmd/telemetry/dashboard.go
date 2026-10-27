@@ -195,6 +195,10 @@ type ErrorRecord struct {
 	ExecutionID     string `json:"execution_id,omitempty"`
 	InstallDuration int    `json:"install_duration,omitempty"`
 	Created         string `json:"created"`
+	ErrorMessage    string `json:"error_message,omitempty"`
+	ErrorStep       string `json:"error_step,omitempty"`
+	ErrorPhase      string `json:"error_phase,omitempty"`
+	FailedFunction  string `json:"failed_function,omitempty"`
 }
 
 type ErrorTimelinePoint struct {

@@ -273,6 +273,13 @@ func (ch *CHClient) migrate() {
 		// Collected by the engine, never transmitted until payload version 2.
 		`ALTER TABLE telemetry_db.telemetry ADD COLUMN IF NOT EXISTS kernel_version String`,
 		`ALTER TABLE telemetry_db.telemetry ADD COLUMN IF NOT EXISTS app_version String`,
+
+		// Payload version 3.
+		`ALTER TABLE telemetry_db.telemetry ADD COLUMN IF NOT EXISTS error_message String`,
+		`ALTER TABLE telemetry_db.telemetry ADD COLUMN IF NOT EXISTS error_step String`,
+		`ALTER TABLE telemetry_db.telemetry ADD COLUMN IF NOT EXISTS error_phase LowCardinality(String)`,
+		`ALTER TABLE telemetry_db.telemetry ADD COLUMN IF NOT EXISTS failed_function String`,
+		`ALTER TABLE telemetry_db.telemetry ADD COLUMN IF NOT EXISTS migrated_from LowCardinality(String)`,
 	}
 	for _, s := range alters {
 		if _, err := ch.db.ExecContext(ctx, s); err != nil {
@@ -394,7 +401,8 @@ func (ch *CHClient) InsertTelemetry(ctx context.Context, p TelemetryOut) error {
 		gpu_vendor, gpu_model, gpu_passthrough,
 		ram_speed, install_duration, has_arm, platform,
 		payload_version, arch, failed_command, failed_line,
-		kernel_version, app_version
+		kernel_version, app_version,
+		error_message, error_step, error_phase, failed_function
 	) VALUES (
 		?, ?, ?, ?, ?, now64(3),
 		?, ?, ?, ?,
@@ -405,7 +413,8 @@ func (ch *CHClient) InsertTelemetry(ctx context.Context, p TelemetryOut) error {
 		?, ?, ?,
 		?, ?, ?, ?,
 		?, ?, ?, ?,
-		?, ?
+		?, ?,
+		?, ?, ?, ?
 	)`
 	_, err := ch.db.ExecContext(ctx, q,
 		generateRecordID(), p.NSAPP, p.Type, p.Status, p.Method,
@@ -418,6 +427,7 @@ func (ch *CHClient) InsertTelemetry(ctx context.Context, p TelemetryOut) error {
 		p.RAMSpeed, uint32(p.InstallDuration), boolToUint8(p.HasArm), p.Platform,
 		uint16(p.PayloadVersion), p.Arch, p.FailedCommand, uint32(p.FailedLine),
 		p.KernelVersion, p.AppVersion,
+		p.ErrorMessage, p.ErrorStep, p.ErrorPhase, p.FailedFunction,
 	)
 	return err
 }
@@ -577,6 +587,7 @@ func scanRecords(rows *sql.Rows) []TelemetryRecord {
 			&r.RAMSpeed, &installDur, &hasArm,
 			&payloadVersion, &r.Arch, &r.FailedCommand, &failedLine,
 			&r.KernelVersion, &r.AppVersion,
+			&r.ErrorMessage, &r.ErrorStep, &r.ErrorPhase, &r.FailedFunction, &r.MigratedFrom,
 			&r.Platform,
 			&r.Created,
 		)
@@ -609,6 +620,7 @@ const recordSelectCols = `nsapp, type, status, method,
 	ram_speed, install_duration, has_arm,
 	payload_version, arch, failed_command, failed_line,
 	kernel_version, app_version,
+	error_message, error_step, error_phase, failed_function, migrated_from,
 	` + platformExpr + ` AS platform_resolved,
 	toString(created)`
 
@@ -1696,7 +1708,8 @@ func (ch *CHClient) FetchErrorAnalysisData(ctx context.Context, days int, repoSo
 	if rows, err := ch.db.QueryContext(ctx, fmt.Sprintf(`
 		SELECT nsapp, type, status, exit_code, error, error_category,
 			os_type, os_version, pve_version, %s AS plat,
-			execution_id, install_duration, toString(created)
+			execution_id, install_duration, toString(created),
+			error_message, error_step, error_phase, failed_function
 		FROM telemetry_db.telemetry WHERE %s
 		ORDER BY created DESC LIMIT 100`, platformExpr, rwErr), raErr...); err == nil {
 		defer rows.Close()
@@ -1706,7 +1719,8 @@ func (ch *CHClient) FetchErrorAnalysisData(ctx context.Context, days int, repoSo
 			var dur uint32
 			if rows.Scan(&er.NSAPP, &er.Type, &er.Status, &ec, &er.Error, &er.ErrorCategory,
 				&er.OsType, &er.OsVersion, &er.PveVer, &er.Platform,
-				&er.ExecutionID, &dur, &er.Created) == nil {
+				&er.ExecutionID, &dur, &er.Created,
+				&er.ErrorMessage, &er.ErrorStep, &er.ErrorPhase, &er.FailedFunction) == nil {
 				er.ExitCode = int(ec)
 				er.InstallDuration = int(dur)
 				data.RecentErrors = append(data.RecentErrors, er)
