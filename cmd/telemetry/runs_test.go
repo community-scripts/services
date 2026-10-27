@@ -281,6 +281,12 @@ func TestParseRunFilter(t *testing.T) {
 			t.Errorf("%s accepted", bad)
 		}
 	}
+	if f, _ := (func() (RunFilter, error) {
+		q, _ := url.ParseQuery("type=install")
+		return parseRunFilter(q, 1, 365, "all")
+	})(); f.Type != "" {
+		t.Errorf("type=install means install types, got %q", f.Type)
+	}
 	if f, _ := get("days=5000"); f.Days != 365 {
 		t.Errorf("days capped to %d", f.Days)
 	}

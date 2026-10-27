@@ -4,334 +4,193 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Error Analysis - Proxmox VE Helper-Scripts</title>
+    <meta name="description" content="What fails in the Proxmox VE Helper Scripts, grouped by cause, app and exit code">
     <link rel="icon" type="image/svg+xml" href="/static/img/logo.svg?v=cs-amber">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="/static/js/svg-inliner.js" defer></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/css/error-analysis.css?v=3">
+    <link rel="stylesheet" href="/static/css/dashboard.css?v=5">
+    <link rel="stylesheet" href="/static/css/error-analysis.css?v=4">
 </head>
 <body>
     <nav class="navbar">
         <a href="/" class="navbar-brand">
             <img width="28" height="28" src="/static/img/logo.svg?v=cs-amber" alt="" data-brand-logo>
-            Proxmox VE Helper-Scripts
+            <span class="brand-name">Proxmox VE Helper-Scripts</span>
         </a>
         <div class="nav-links">
-            <a href="/" class="nav-link">📊 Dashboard</a>
-            <a href="/error-analysis" class="nav-link active">🔍 Error Analysis</a>
-            <a href="/script-analysis" class="nav-link">📜 Scripts</a>
+            <a href="/" class="nav-link">Dashboard</a>
+            <a href="/error-analysis" class="nav-link active" aria-current="page">Errors</a>
+            <a href="/script-analysis" class="nav-link">Scripts</a>
         </div>
     </nav>
 
-    <div class="main-content">
+    <main class="main-content">
         <div class="page-header">
-            <h1>🔍 Error Analysis</h1>
-            <p>Detailed error and failure analysis with exit code breakdowns.</p>
+            <h1>Error analysis</h1>
+            <p>Failed runs grouped by what went wrong. Rates are failed runs divided by finished runs; aborted runs, runs without a result and runs still going are counted apart.</p>
         </div>
 
-        <!-- Filters -->
-        <div class="filters-bar" style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 12px; margin-bottom: 24px;">
-            <div class="filter-group">
-                <label>Source:</label>
-                <div class="quickfilter">
-                    <button class="source-btn active" data-repo="all">All</button>
-                    <button class="source-btn" data-repo="ProxmoxVE">ProxmoxVE</button>
-                    <button class="source-btn" data-repo="DevScripts">DevScripts</button>
-                </div>
+        <div class="filter-row" role="group" aria-label="Filters">
+            <div class="seg" data-filter="repo" role="group" aria-label="Source">
+                <button type="button" data-value="all">All sources</button>
+                <button type="button" data-value="ProxmoxVE">ProxmoxVE</button>
+                <button type="button" data-value="DevScripts">DevScripts</button>
+                <button type="button" data-value="external">External</button>
             </div>
-            <div class="filter-divider"></div>
-            <div class="filter-group">
-                <label>Platform:</label>
-                <div class="quickfilter">
-                    <button class="platform-btn active" data-platform="">All</button>
-                    <button class="platform-btn" data-platform="pve">Proxmox</button>
-                    <button class="platform-btn" data-platform="incus">Incus</button>
-                </div>
+            <div class="seg" data-filter="platform" role="group" aria-label="Platform">
+                <button type="button" data-value="">All platforms</button>
+                <button type="button" data-value="pve">Proxmox</button>
+                <button type="button" data-value="incus">Incus</button>
             </div>
-            <div class="filter-divider"></div>
-            <div class="filter-group">
-                <label>Repository:</label>
-                <select id="filterSlug" class="filter-select" onchange="onSlugFilterChange()">
-                    <option value="">All repositories</option>
-                </select>
+            <label class="field"><span class="sr-only">Repository</span>
+                <select id="fSlug" class="custom-select"><option value="">All repositories</option></select></label>
+            <label class="field"><span class="sr-only">Type</span>
+                <select id="fType" class="custom-select">
+                    <option value="">LXC and VM</option>
+                    <option value="lxc">LXC</option>
+                    <option value="vm">VM</option>
+                    <option value="pve">Tools</option>
+                    <option value="addon">Add-ons</option>
+                    <option value="all">All types</option>
+                </select></label>
+            <div class="seg" data-filter="days" role="group" aria-label="Period">
+                <button type="button" data-value="1">Today</button>
+                <button type="button" data-value="7">7 days</button>
+                <button type="button" data-value="30">30 days</button>
+                <button type="button" data-value="90">90 days</button>
             </div>
-            <div class="filter-divider"></div>
-            <div class="filter-group">
-                <label>Period:</label>
-                <div class="quickfilter">
-                    <button class="filter-btn active" data-days="1">Today</button>
-                    <button class="filter-btn" data-days="7">7 Days</button>
-                    <button class="filter-btn" data-days="30">30 Days</button>
-                    <button class="filter-btn" data-days="90">90 Days</button>
-                </div>
-            </div>
-            <div style="margin-left: auto;">
-                <button class="btn" onclick="refreshData()">
-                    <img src="/static/img/refresh.svg" alt="">
-                    Refresh
-                </button>
+            <label class="field"><span class="sr-only">Search</span>
+                <input type="search" id="fSearch" class="search-input" placeholder="Filter causes and apps" autocomplete="off"></label>
+            <div class="filter-tail">
+                <button type="button" class="btn" id="exportBtn"><img src="/static/img/download.svg" alt="">Export JSON</button>
+                <button type="button" class="btn" id="refreshBtn"><img src="/static/img/refresh.svg" alt="">Refresh</button>
+                <span class="updated" id="updated" aria-live="polite"></span>
             </div>
         </div>
 
-        <!-- Stuck Installing Banner -->
-        <div id="stuckBanner" class="stuck-banner" style="display: none;">
-            <div>
-                <strong>⚠️ <span id="stuckCount">0</span> installations stuck in "Installing" state</strong>
-                <div style="font-size: 12px; margin-top: 4px;">These records have not received a completion status. Cleanup runs every 15 min for records older than 2h.</div>
-            </div>
-            <button class="btn btn-danger" onclick="triggerCleanup()">🧹 Run Cleanup Now</button>
-        </div>
+        <div id="errorBanner" class="banner banner-error" role="alert" hidden></div>
+        <div id="stuckBanner" class="banner banner-stuck" hidden></div>
 
-        <!-- Stats Cards -->
-        <div class="stats-grid">
-            <div class="stat-card red">
-                <div class="label">Total Errors</div>
-                <div class="value" id="totalErrors">-</div>
-                <div class="sub">failed + aborted</div>
-            </div>
-            <div class="stat-card orange">
-                <div class="label">Overall Failure Rate</div>
-                <div class="value" id="failRate">-</div>
-                <div class="sub">of all installations</div>
-            </div>
-            <div class="stat-card yellow">
-                <div class="label">Stuck Installing</div>
-                <div class="value" id="stuckCount2">-</div>
-                <div class="sub">no completion received</div>
-            </div>
-            <div class="stat-card purple">
-                <div class="label">Total Installations</div>
-                <div class="value" id="totalInstalls">-</div>
-                <div class="sub">in selected period</div>
-            </div>
-        </div>
+        <section class="cards cards-5" id="summary" aria-label="Summary"></section>
 
-        <!-- Charts -->
-        <div class="charts-grid">
-            <div class="chart-card">
-                <h3>Error Timeline</h3>
-                <div class="chart-wrapper"><canvas id="timelineChart"></canvas></div>
-            </div>
-            <div class="chart-card">
-                <h3>Error Categories</h3>
-                <div class="chart-wrapper"><canvas id="categoryChart"></canvas></div>
-            </div>
-        </div>
-
-        <!-- Exit Code Distribution -->
-        <div class="section-card">
+        <section class="section-card">
             <div class="section-header">
                 <div>
-                    <h2>Exit Code Distribution</h2>
-                    <p>Breakdown of all exit codes returned by failed scripts.</p>
+                    <h2>What is failing</h2>
+                    <p>One row per cause: the error message, or for older reports the failing command or exit code. Setups counts distinct hardware and host combinations, so one host retrying stays one setup.</p>
                 </div>
             </div>
             <div class="table-wrapper">
-                <table>
+                <table class="causes">
                     <thead>
                         <tr>
-                            <th>Exit Code</th>
-                            <th>Description</th>
-                            <th>Category</th>
-                            <th>Count</th>
-                            <th>Percentage</th>
-                            <th>Distribution</th>
+                            <th scope="col"><button type="button" class="th-sort" data-csort="message">Cause</button></th>
+                            <th scope="col" class="num"><button type="button" class="th-sort" data-csort="failures">Failures</button></th>
+                            <th scope="col" class="num"><button type="button" class="th-sort" data-csort="apps">Apps</button></th>
+                            <th scope="col" class="num"><button type="button" class="th-sort" data-csort="setups">Setups</button></th>
+                            <th scope="col"><button type="button" class="th-sort" data-csort="first_seen">First seen</button></th>
+                            <th scope="col"><button type="button" class="th-sort" data-csort="last_seen">Last seen</button></th>
+                            <th scope="col" class="num"><button type="button" class="th-sort" data-csort="last_24h">Last 24 h</button></th>
                         </tr>
                     </thead>
-                    <tbody id="exitCodeTable">
-                        <tr><td colspan="6"><div class="loading"><div class="loading-spinner"></div>Loading...</div></td></tr>
-                    </tbody>
+                    <tbody id="causesBody"><tr><td colspan="7" class="empty">Loading causes</td></tr></tbody>
                 </table>
             </div>
-        </div>
+        </section>
 
-        <!-- Failure Signatures (grouped by error message, else failing command) -->
-        <div class="section-card">
+        <section class="section-card">
             <div class="section-header">
                 <div>
-                    <h2>Top Failure Signatures</h2>
-                    <p>Failures grouped by what went wrong, or by the command that failed for older reports — the fastest way to spot a broken script step.</p>
+                    <h2>Applications with errors</h2>
+                    <p id="appsNote">Failing now means the last failure is newer than the last success.</p>
                 </div>
             </div>
             <div class="table-wrapper">
-                <table>
+                <table class="apps">
                     <thead>
                         <tr>
-                            <th>Failure</th>
-                            <th>Failures</th>
-                            <th>Top Exit Code</th>
-                            <th>Apps</th>
-                            <th>Affected</th>
+                            <th scope="col"><button type="button" class="th-sort" data-asort="app">App</button></th>
+                            <th scope="col" class="num"><button type="button" class="th-sort" data-asort="runs">Runs</button></th>
+                            <th scope="col" class="num"><button type="button" class="th-sort" data-asort="failed">Failed</button></th>
+                            <th scope="col" class="num"><button type="button" class="th-sort" data-asort="failure_rate">Rate</button></th>
+                            <th scope="col" class="num"><button type="button" class="th-sort" data-asort="setups_failed">Setups</button></th>
+                            <th scope="col">Top cause</th>
+                            <th scope="col"><button type="button" class="th-sort" data-asort="last_failure">Last failure</button></th>
+                            <th scope="col">Last success</th>
                         </tr>
                     </thead>
-                    <tbody id="signatureTable">
-                        <tr><td colspan="5"><div class="loading"><div class="loading-spinner"></div>Loading...</div></td></tr>
-                    </tbody>
+                    <tbody id="appsBody"><tr><td colspan="8" class="empty">Loading apps</td></tr></tbody>
                 </table>
             </div>
+        </section>
+
+        <div class="context-row">
+            <section class="section-card">
+                <div class="section-header"><div><h2>Exit codes</h2><p>Failed runs by exit code. Select one to list its runs.</p></div></div>
+                <div class="table-wrapper">
+                    <table class="compact exits">
+                        <thead><tr><th scope="col" class="num">Code</th><th scope="col">Meaning</th><th scope="col" class="num">Runs</th><th scope="col" class="num">Apps</th></tr></thead>
+                        <tbody id="exitBody"></tbody>
+                    </table>
+                </div>
+            </section>
+            <section class="section-card">
+                <div class="section-header"><div><h2 id="chartTitle">Failures over time</h2><p id="chartNote">Failed runs against all runs that started in each period.</p></div></div>
+                <div id="failChart" class="chart-box"></div>
+            </section>
         </div>
 
-        <!-- Error Categories -->
-        <div class="section-card">
-            <div class="section-header">
-                <div>
-                    <h2>Error Categories</h2>
-                    <p>Grouped errors by type with affected applications.</p>
-                </div>
+        <section class="section-card api-note">
+            <div class="section-header"><div><h2>Query this data directly</h2><p>Every table on this page comes from a public JSON endpoint. All of them take the filters above.</p></div></div>
+            <div class="api-body">
+                <dl class="api-list">
+                    <div><dt><code>GET /api/errors</code></dt><dd>Everything on this page: summary, causes, apps, exit codes, failures over time and stuck runs.</dd></div>
+                    <div><dt><code>GET /api/causes</code></dt><dd>Failure causes with apps, setups, first and last seen, trend and example run IDs. <code>examples=full</code> adds the example runs with traces; <code>limit</code> up to 200.</dd></div>
+                    <div><dt><code>GET /api/app-errors</code></dt><dd>Apps with at least one failure: runs, outcomes, failure rate, setups, top cause, last failure and success, failing now.</dd></div>
+                    <div><dt><code>GET /api/records</code></dt><dd>Single runs with merged metadata, stage timestamps and the trace. Filter with <code>cause</code>, <code>message</code>, <code>app</code>, <code>exit_code</code>, <code>category</code>, <code>status</code>, <code>execution_id</code>, <code>random_id</code>, <code>search</code>, <code>os</code>; page with <code>page</code>, <code>limit</code> (up to 100) and <code>sort</code>.</dd></div>
+                </dl>
+                <p class="api-params">Filters: <code>days</code> (1 to 365), <code>repo</code> (ProxmoxVE, DevScripts, external), <code>slug</code> (owner/repo), <code>platform</code> (pve, incus), <code>type</code> (lxc, vm, turnkey, pve, addon, tool, install, all; rates default to LXC and VM), <code>app</code> (exact name). <code>status</code> takes success, failed, aborted, unknown (no result) or in_progress.</p>
+                <p class="api-params">This view as JSON: <a id="apiLink" href="/api/errors">/api/errors</a></p>
             </div>
-            <div class="table-wrapper">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Category</th>
-                            <th>Count</th>
-                            <th>Percentage</th>
-                            <th>Affected Apps</th>
-                        </tr>
-                    </thead>
-                    <tbody id="categoryTable">
-                        <tr><td colspan="4"><div class="loading"><div class="loading-spinner"></div>Loading...</div></td></tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
+        </section>
+    </main>
 
-        <!-- Apps with Errors -->
-        <div class="section-card">
-            <div class="section-header">
-                <div>
-                    <h2>Applications with Errors</h2>
-                    <p>All apps that experienced failures, sorted by error count.</p>
-                </div>
-                <div style="display: flex; gap: 8px;">
-                    <input type="text" id="appFilter" placeholder="Filter by app name..." style="background: var(--bg-secondary); border: 1px solid var(--border-color); color: var(--text-primary); padding: 8px 14px; border-radius: 8px; font-size: 13px; outline: none; width: 200px;" oninput="filterAppTable()">
-                </div>
-            </div>
-            <div class="table-wrapper">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Application</th>
-                            <th>Type</th>
-                            <th>Total</th>
-                            <th>Failed</th>
-                            <th title="Runs the operator cancelled. Not counted as failures.">Aborted</th>
-                            <th title="Failed / (Total - Aborted). A cancelled run is not a failed one.">Fail Rate</th>
-                            <th title="The exit code this script fails with most often.">Top Exit Code</th>
-                            <th title="An error from that same exit code, not from some other run.">Top Error</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody id="appErrorTable">
-                        <tr><td colspan="9"><div class="loading"><div class="loading-spinner"></div>Loading...</div></td></tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
+    <dialog id="recordDialog" class="record-dialog" aria-labelledby="recordTitle">
+        <button type="button" class="dialog-close" data-close-dialog aria-label="Close">&times;</button>
+        <div id="recordBody"></div>
+    </dialog>
 
-        <!-- Recent Error Log -->
-        <div class="section-card">
-            <div class="section-header">
-                <div>
-                    <h2>Recent Error Log</h2>
-                    <p>Last 100 failed installations — click a row for the full error trace.</p>
-                </div>
-                <div style="display: flex; gap: 8px;">
-                    <input type="text" id="recentFilter" placeholder="Filter by app / error text..." style="background: var(--bg-secondary); border: 1px solid var(--border-color); color: var(--text-primary); padding: 8px 14px; border-radius: 8px; font-size: 13px; outline: none; width: 240px;" oninput="filterRecentTable()">
-                </div>
-            </div>
-            <div class="table-wrapper">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Status</th>
-                            <th>Platform</th>
-                            <th>Type</th>
-                            <th>Application</th>
-                            <th>Exit Code</th>
-                            <th>Category</th>
-                            <th>Error Summary</th>
-                            <th>OS</th>
-                            <th>Duration</th>
-                            <th>Timestamp</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody id="recentErrorTable">
-                        <tr><td colspan="11"><div class="loading"><div class="loading-spinner"></div>Loading...</div></td></tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </div>
+    <dialog id="cleanupDialog" class="form-dialog" aria-labelledby="cleanupTitle">
+        <button type="button" class="dialog-close" data-close-dialog aria-label="Close">&times;</button>
+        <h2 id="cleanupTitle">Mark stalled runs as no result</h2>
+        <p class="muted" id="cleanupText">Runs that stopped reporting are marked as no result so they leave the in-progress count. This needs the admin password.</p>
+        <form id="cleanupForm" method="dialog">
+            <label class="form-label" for="cleanupPassword">Admin password</label>
+            <input type="password" id="cleanupPassword" class="search-input" autocomplete="current-password" required>
+            <p id="cleanupResult" class="form-result" role="status"></p>
+            <div class="rd-actions"><button type="button" class="btn" data-close-dialog>Cancel</button><button type="submit" class="btn btn-danger" id="cleanupRun">Run cleanup</button></div>
+        </form>
+    </dialog>
 
-    <!-- Error Detail Modal -->
-    <div class="modal-overlay" id="errorDetailModal" onclick="if(event.target===this)closeErrorDetail()">
-        <div class="modal-content error-detail-modal" onclick="event.stopPropagation()">
-            <div class="modal-header">
-                <h2 id="errorDetailTitle">Error Details</h2>
-                <button class="modal-close" onclick="closeErrorDetail()">&times;</button>
-            </div>
-            <div class="modal-body" id="errorDetailBody"></div>
-        </div>
-    </div>
+    <dialog id="issueDialog" class="form-dialog" aria-labelledby="issueTitleHead">
+        <button type="button" class="dialog-close" data-close-dialog aria-label="Close">&times;</button>
+        <h2 id="issueTitleHead">Create a GitHub issue</h2>
+        <form id="issueForm" method="dialog">
+            <label class="form-label" for="issuePassword">Admin password</label>
+            <input type="password" id="issuePassword" class="search-input" autocomplete="current-password" required>
+            <label class="form-label" for="issueTitle">Title</label>
+            <input type="text" id="issueTitle" class="search-input">
+            <label class="form-label" for="issueBody">Body</label>
+            <textarea id="issueBody" class="search-input" rows="10"></textarea>
+            <label class="form-label" for="issueLabels">Labels, comma separated</label>
+            <input type="text" id="issueLabels" class="search-input" value="bug, telemetry">
+            <p id="issueResult" class="form-result" role="status"></p>
+            <div class="rd-actions"><button type="button" class="btn" data-close-dialog>Cancel</button><button type="submit" class="btn btn-primary" id="issueSubmit">Create issue</button></div>
+        </form>
+    </dialog>
 
-    <!-- GitHub Issue Modal -->
-    <div class="modal-overlay" id="issueModal" onclick="if(event.target===this)closeIssueModal()">
-        <div class="modal-content" onclick="event.stopPropagation()">
-            <div class="modal-header">
-                <h2>🐛 Create GitHub Issue</h2>
-                <button class="modal-close" onclick="closeIssueModal()">&times;</button>
-            </div>
-            <div class="modal-body">
-                <div id="issueAlert" class="alert-box" style="display: none;"></div>
-                <div class="form-group">
-                    <label>Admin Password *</label>
-                    <input type="password" id="issuePassword" class="form-input" placeholder="Enter admin password...">
-                </div>
-                <div class="form-group">
-                    <label>Issue Title</label>
-                    <input type="text" id="issueTitle" class="form-input">
-                </div>
-                <div class="form-group">
-                    <label>Issue Body</label>
-                    <textarea id="issueBody" class="form-input"></textarea>
-                </div>
-                <div class="form-group">
-                    <label>Labels (comma-separated)</label>
-                    <input type="text" id="issueLabels" class="form-input" value="bug, telemetry">
-                </div>
-                <div style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px;">
-                    <button class="btn" onclick="closeIssueModal()">Cancel</button>
-                    <button class="btn btn-primary" id="submitIssueBtn" onclick="submitIssue()">Create Issue</button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Cleanup Modal -->
-    <div class="modal-overlay" id="cleanupModal" onclick="if(event.target===this)closeCleanupModal()">
-        <div class="modal-content" onclick="event.stopPropagation()">
-            <div class="modal-header">
-                <h2>🧹 Trigger Cleanup</h2>
-                <button class="modal-close" onclick="closeCleanupModal()">&times;</button>
-            </div>
-            <div class="modal-body">
-                <div id="cleanupAlert" class="alert-box" style="display: none;"></div>
-                <p style="margin-bottom: 16px; color: var(--text-secondary);">This will mark all stuck "Installing" records (older than 2h) as "unknown". This action requires the admin password.</p>
-                <div class="form-group">
-                    <label>Admin Password *</label>
-                    <input type="password" id="cleanupPassword" class="form-input" placeholder="Enter admin password...">
-                </div>
-                <div style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px;">
-                    <button class="btn" onclick="closeCleanupModal()">Cancel</button>
-                    <button class="btn btn-danger" id="runCleanupBtn" onclick="runCleanup()">Run Cleanup</button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <script src="/static/js/error-analysis.js?v=4"></script>
+    <script src="/static/js/runs.js?v=1"></script>
+    <script src="/static/js/error-analysis.js?v=5"></script>
 </body>
 </html>

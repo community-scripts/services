@@ -59,12 +59,14 @@ func parseRunFilter(q url.Values, defaultDays, maxDays int, defaultType string) 
 	default:
 		return f, fmt.Errorf("unknown platform %q: use pve, incus or all", p)
 	}
-	f.Type = strings.ToLower(cleanParam(q, "type"))
-	if f.Type == "" {
+	switch f.Type = strings.ToLower(cleanParam(q, "type")); f.Type {
+	case "":
 		f.Type = defaultType
+	case "install":
+		f.Type = ""
 	}
 	if !allowedRunType[f.Type] {
-		return f, fmt.Errorf("unknown type %q: use lxc, vm, turnkey, pve, addon, tool or all", f.Type)
+		return f, fmt.Errorf("unknown type %q: use lxc, vm, turnkey, pve, addon, tool, install or all", f.Type)
 	}
 	f.Status = strings.ToLower(cleanParam(q, "status"))
 	if f.Status != "" && !allowedRunStatus[f.Status] {
