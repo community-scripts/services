@@ -498,6 +498,9 @@ func repoSourcePred(repoSource string) (string, []interface{}) {
 	}
 }
 
+// installTypesPred keeps LXC/VM install rates free of tool and addon runs.
+const installTypesPred = "type NOT IN ('pve','addon','tool')"
+
 // platformExpr derives the virtualization platform for every row, including
 // legacy rows written before the platform column existed:
 //   - explicit platform column wins
@@ -652,9 +655,12 @@ func (ch *CHClient) FetchRepoSlugs(ctx context.Context, days int, repoSource str
 func (ch *CHClient) FetchDashboardData(ctx context.Context, days int, repoSource, repoSlug, platform string) (*DashboardData, error) {
 	data := &DashboardData{}
 	mw, ma := chMVWhere(days, repoSource)
-	tw, ta := chWhere(days, repoSource, repoSlug, platform, "status IN ('success','failed','aborted','unknown')")
+	tw, ta := chWhere(days, repoSource, repoSlug, platform, "status IN ('success','failed','aborted','unknown')", installTypesPred)
 	// Materialized views have no platform column — platform filters need raw-table aggregation.
 	rawAgg := repoSlug != "" || platform != ""
+	// Headline, failed apps and the daily chart are install rates; tools and addons are listed separately.
+	iw, ia := chWhere(days, repoSource, repoSlug, platform, installTypesPred)
+	imw := mw + " AND " + installTypesPred
 
 	// ── 1. Main counts ──
 	// "Total" counts DISTINCT installations (one per execution), not raw event
@@ -668,7 +674,7 @@ func (ch *CHClient) FetchDashboardData(ctx context.Context, days int, repoSource
 		SELECT
 			uniqExact(if(execution_id = '', random_id, execution_id)),
 			countIf(status='success'), countIf(status='failed'), countIf(status='aborted')
-		FROM telemetry_db.telemetry WHERE %s`, rw), ra...,
+		FROM telemetry_db.telemetry WHERE %s`, iw), ia...,
 	).Scan(&total, &sc, &fc, &ac)
 	if err != nil {
 		return nil, fmt.Errorf("CH dashboard counts: %w", err)
@@ -915,7 +921,7 @@ func (ch *CHClient) FetchDashboardData(ctx context.Context, days int, repoSource
 			WHERE %s AND nsapp!=''
 			GROUP BY nsapp
 			HAVING f > 0 AND t >= %d
-			ORDER BY toFloat64(f)/t DESC LIMIT 50`, rw, minInstalls), ra...); err == nil {
+			ORDER BY toFloat64(f)/t DESC LIMIT 50`, iw, minInstalls), ia...); err == nil {
 			defer rows.Close()
 			appTotal := make(map[string]int)
 			appFailed := make(map[string]int)
@@ -936,7 +942,7 @@ func (ch *CHClient) FetchDashboardData(ctx context.Context, days int, repoSource
 		WHERE %s AND nsapp!=''
 		GROUP BY nsapp
 		HAVING f > 0 AND t >= %d
-		ORDER BY toFloat64(f)/t DESC LIMIT 50`, mw, minInstalls), ma...); err == nil {
+		ORDER BY toFloat64(f)/t DESC LIMIT 50`, imw, minInstalls), ma...); err == nil {
 		defer rows.Close()
 		appTotal := make(map[string]int)
 		appFailed := make(map[string]int)
@@ -957,7 +963,7 @@ func (ch *CHClient) FetchDashboardData(ctx context.Context, days int, repoSource
 		if rows, err := ch.db.QueryContext(ctx, fmt.Sprintf(`
 			SELECT toString(toDate(created)) d, countIf(status='success') s, countIf(status='failed') f
 			FROM telemetry_db.telemetry WHERE %s
-			GROUP BY toDate(created) ORDER BY toDate(created)`, rw), ra...); err == nil {
+			GROUP BY toDate(created) ORDER BY toDate(created)`, iw), ia...); err == nil {
 			defer rows.Close()
 			sMap := make(map[string]int)
 			fMap := make(map[string]int)
@@ -978,7 +984,7 @@ func (ch *CHClient) FetchDashboardData(ctx context.Context, days int, repoSource
 	} else if rows, err := ch.db.QueryContext(ctx, fmt.Sprintf(`
 		SELECT toString(day) d, sum(success) s, sum(failed) f
 		FROM telemetry_db.mv_daily_stats WHERE %s
-		GROUP BY day ORDER BY day`, mw), ma...); err == nil {
+		GROUP BY day ORDER BY day`, imw), ma...); err == nil {
 		defer rows.Close()
 		sMap := make(map[string]int)
 		fMap := make(map[string]int)

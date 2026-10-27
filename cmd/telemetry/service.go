@@ -1468,6 +1468,42 @@ func validate(in *TelemetryIn) error {
 	return nil
 }
 
+// classifyIngest settles status, category and error text of a validated record.
+// The server's category wins when it is sure; otherwise the client's is kept.
+func classifyIngest(in *TelemetryIn, verbose bool) {
+	if in.Status == "failed" && in.ExitCode == 0 {
+		in.Status = "success"
+		in.Error = ""
+		in.ErrorCategory = ""
+		in.ErrorMessage, in.ErrorPhase, in.FailedFunction = "", "", ""
+		if verbose {
+			log.Printf("auto-reclassified exit_code=0 as success: nsapp=%s", in.NSAPP)
+		}
+	}
+
+	if in.Status == "failed" && isAbortSignal(in.ExitCode, in.Error) {
+		in.Status = "aborted"
+		if in.ErrorCategory == "" || in.ErrorCategory == "unknown" {
+			in.ErrorCategory = "user_aborted"
+		}
+		if verbose {
+			log.Printf("auto-reclassified as aborted: nsapp=%s exit_code=%d", in.NSAPP, in.ExitCode)
+		}
+	}
+
+	if in.Status == "failed" {
+		if serverCat := deriveErrorCategory(in.ExitCode, in.Error); serverCat != "unknown" && serverCat != "" {
+			in.ErrorCategory = serverCat
+		} else if in.ErrorCategory == "" {
+			in.ErrorCategory = "unknown"
+		}
+	}
+
+	if in.Status == "failed" && in.Error == "" && in.ExitCode != 0 {
+		in.Error = fmt.Sprintf("Exit code %d: %s", in.ExitCode, getExitCodeDescription(in.ExitCode))
+	}
+}
+
 // -------- HTTP server --------
 
 func serveHTMLFile(w http.ResponseWriter, r *http.Request, filePath string) {
@@ -2519,57 +2555,7 @@ func main() {
 			return
 		}
 
-		// Auto-reclassify: exit_code=0 is NEVER an error — always reclassify as success
-		if in.Status == "failed" && in.ExitCode == 0 {
-			in.Status = "success"
-			in.Error = ""
-			in.ErrorCategory = ""
-			in.ErrorMessage, in.ErrorPhase, in.FailedFunction = "", "", ""
-			if cfg.EnableReqLogging {
-				log.Printf("auto-reclassified exit_code=0 as success: nsapp=%s", in.NSAPP)
-			}
-		}
-
-		// Auto-reclassify: addon and pve type failures â†’ success (excluded from failure stats)
-		if in.Status == "failed" && (in.Type == "addon" || in.Type == "pve") {
-			in.Status = "success"
-			in.Error = ""
-			in.ErrorCategory = ""
-			in.ExitCode = 0
-			if cfg.EnableReqLogging {
-				log.Printf("auto-reclassified %s failure as success: nsapp=%s", in.Type, in.NSAPP)
-			}
-		}
-
-		// Auto-reclassify: clients still send status="failed" for SIGINT/Ctrl+C and SIGHUP,
-		// detect and reclassify as "aborted" server-side.
-		if in.Status == "failed" && isAbortSignal(in.ExitCode, in.Error) {
-			in.Status = "aborted"
-			if in.ErrorCategory == "" || in.ErrorCategory == "unknown" {
-				in.ErrorCategory = "user_aborted"
-			}
-			if cfg.EnableReqLogging {
-				log.Printf("auto-reclassified as aborted: nsapp=%s exit_code=%d", in.NSAPP, in.ExitCode)
-			}
-		}
-
-		// Authoritative error categorization: the server is the single source of
-		// truth. When the server can confidently derive a category (from exit code
-		// or error text), it overrides whatever the client sent so that client/server
-		// mappings can never diverge. Only when the server is unsure do we keep the
-		// client's category (it may have had extra local context).
-		if in.Status == "failed" {
-			if serverCat := deriveErrorCategory(in.ExitCode, in.Error); serverCat != "unknown" && serverCat != "" {
-				in.ErrorCategory = serverCat
-			} else if in.ErrorCategory == "" {
-				in.ErrorCategory = "unknown"
-			}
-		}
-
-		// Enrich error text with exit code description if error text is empty
-		if in.Status == "failed" && in.Error == "" && in.ExitCode != 0 {
-			in.Error = fmt.Sprintf("Exit code %d: %s", in.ExitCode, getExitCodeDescription(in.ExitCode))
-		}
+		classifyIngest(&in, cfg.EnableReqLogging)
 
 		// Map input to telemetry schema
 		out := TelemetryOut{
