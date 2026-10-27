@@ -664,10 +664,11 @@ func (ch *CHClient) FetchNewDashboard(
 		       if(cpuarch != '', cpuarch, if(arm = 1, 'arm64', '')),
 		       kernelver, appver, cpu, cpumodel, gpu, gpumodel, gpupass,
 		       ramspeed, pver,
-		       final_msg, final_step, final_phase, failfunc
+		       final_msg, final_step, final_phase, failfunc,
+		       if(final_msg = '' AND final_status IN ('failed','unknown'), %s, '')
 		FROM (%s)
 		ORDER BY last_seen DESC
-		LIMIT 300`, osExpr, runs), args...)
+		LIMIT 300`, osExpr, outputTailSQL("final_err"), runs), args...)
 		if err != nil {
 			return err
 		}
@@ -675,6 +676,7 @@ func (ch *CHClient) FetchNewDashboard(
 		for rows.Next() {
 			var r NewRecentRun
 			var priv uint8
+			var tail string
 			if rows.Scan(&r.Run, &r.App, &r.Type, &r.Status, &r.ExitCode, &r.Category,
 				&r.Platform, &r.OS, &r.HostVer, &r.Repo, &r.Method,
 				&r.Cores, &r.RAM, &r.Disk, &priv, &r.Duration, &r.LastSeen, &r.Error,
@@ -682,9 +684,12 @@ func (ch *CHClient) FetchNewDashboard(
 				&r.KernelVersion, &r.AppVersion, &r.CPUVendor, &r.CPUModel,
 				&r.GPUVendor, &r.GPUModel, &r.GPUPassthrough,
 				&r.RAMSpeed, &r.PayloadVersion,
-				&r.ErrorMessage, &r.ErrorStep, &r.ErrorPhase, &r.FailedFunction) == nil {
+				&r.ErrorMessage, &r.ErrorStep, &r.ErrorPhase, &r.FailedFunction, &tail) == nil {
 				// ct_type 1 is unprivileged, so privileged is the other case.
 				r.Privileged = priv != 1
+				if needsErrorMessage(r.Status, r.ErrorMessage) {
+					r.ErrorMessage = deriveErrorMessage(tail)
+				}
 				d.Recent = append(d.Recent, r)
 			}
 		}
@@ -698,6 +703,17 @@ func (ch *CHClient) FetchNewDashboard(
 	sort.Strings(d.Warnings)
 
 	return d, nil
+}
+
+// outputTailSQL is the end of a trace's output section, enough to derive a
+// message from without fetching whole traces for every row.
+func outputTailSQL(col string) string {
+	return fmt.Sprintf(`multiIf(
+		position(%[1]s, '\n---\n') > 0, concat('---\n', substring(%[1]s,
+			greatest(toInt64(position(%[1]s, '\n---\n')) + 5, toInt64(length(%[1]s)) - 3999))),
+		position(%[1]s, '|---|') > 0, concat('|---|', substring(%[1]s,
+			greatest(toInt64(position(%[1]s, '|---|')) + 5, toInt64(length(%[1]s)) - 3999))),
+		'')`, col)
 }
 
 // runSections executes every section, at most limit of them at a time, and

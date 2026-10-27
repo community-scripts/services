@@ -607,6 +607,9 @@ func scanRecords(rows *sql.Rows) []TelemetryRecord {
 		r.HasArm = hasArm != 0
 		r.PayloadVersion = int(payloadVersion)
 		r.FailedLine = int(failedLine)
+		if needsErrorMessage(r.Status, r.ErrorMessage) {
+			r.ErrorMessage = deriveErrorMessage(r.Error)
+		}
 		out = append(out, r)
 	}
 	return out
@@ -1584,6 +1587,7 @@ func (ch *CHClient) FetchErrorAnalysisData(ctx context.Context, days int, repoSo
 		type dominantFailure struct {
 			exitCode int
 			error    string
+			message  string
 			category string
 		}
 		byApp := make(map[string]dominantFailure, len(data.AppErrors))
@@ -1593,10 +1597,11 @@ func (ch *CHClient) FetchErrorAnalysisData(ctx context.Context, days int, repoSo
 		dw, da := chWhere(days, repoSource, repoSlug, platform,
 			"status='failed'", "error_category!='user_aborted'", "exit_code!=0", "nsapp!=''")
 		rows, err := ch.db.QueryContext(ctx, fmt.Sprintf(`
-			SELECT nsapp, argMax(ec, n), argMax(err, n), argMax(cat, n)
+			SELECT nsapp, argMax(ec, n), argMax(err, n), argMax(msg, n), argMax(cat, n)
 			FROM (
 				SELECT nsapp, exit_code AS ec, count() AS n,
 					anyIf(error, error!='') AS err,
+					anyIf(error_message, error_message!='') AS msg,
 					anyIf(error_category, error_category NOT IN ('','uncategorized')) AS cat
 				FROM telemetry_db.telemetry WHERE %s
 				GROUP BY nsapp, exit_code
@@ -1612,8 +1617,11 @@ func (ch *CHClient) FetchErrorAnalysisData(ctx context.Context, days int, repoSo
 				var app string
 				var ec int16
 				var d dominantFailure
-				if rows.Scan(&app, &ec, &d.error, &d.category) == nil {
+				if rows.Scan(&app, &ec, &d.error, &d.message, &d.category) == nil {
 					d.exitCode = int(ec)
+					if d.message == "" {
+						d.message = deriveErrorMessage(d.error)
+					}
 					byApp[app] = d
 				}
 			}
@@ -1623,6 +1631,7 @@ func (ch *CHClient) FetchErrorAnalysisData(ctx context.Context, days int, repoSo
 			if d, ok := byApp[data.AppErrors[i].App]; ok {
 				data.AppErrors[i].TopExitCode = d.exitCode
 				data.AppErrors[i].TopError = d.error
+				data.AppErrors[i].TopMessage = d.message
 				data.AppErrors[i].TopCategory = d.category
 			}
 		}
@@ -1728,6 +1737,9 @@ func (ch *CHClient) FetchErrorAnalysisData(ctx context.Context, days int, repoSo
 				&er.ExecutionID, &dur, &er.Created,
 				&er.ErrorMessage, &er.ErrorStep, &er.ErrorPhase, &er.FailedFunction) == nil {
 				er.ExitCode = int(ec)
+				if needsErrorMessage(er.Status, er.ErrorMessage) {
+					er.ErrorMessage = deriveErrorMessage(er.Error)
+				}
 				er.InstallDuration = int(dur)
 				data.RecentErrors = append(data.RecentErrors, er)
 			}

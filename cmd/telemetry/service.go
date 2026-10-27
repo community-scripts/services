@@ -1501,6 +1501,10 @@ func classifyIngest(in *TelemetryIn, verbose bool) {
 	if in.Status == "failed" && in.Error == "" && in.ExitCode != 0 {
 		in.Error = fmt.Sprintf("Exit code %d: %s", in.ExitCode, getExitCodeDescription(in.ExitCode))
 	}
+
+	if needsErrorMessage(in.Status, in.ErrorMessage) {
+		in.ErrorMessage = deriveErrorMessage(in.Error)
+	}
 }
 
 // -------- HTTP server --------

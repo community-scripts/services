@@ -178,6 +178,7 @@ type AppErrorDetail struct {
 	FailureRate  float64 `json:"failure_rate"`
 	TopExitCode  int     `json:"top_exit_code"`
 	TopError     string  `json:"top_error"`
+	TopMessage   string  `json:"top_message,omitempty"`
 	TopCategory  string  `json:"top_category"`
 }
 
