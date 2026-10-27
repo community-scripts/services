@@ -23,17 +23,17 @@ type DashboardData struct {
 	// following the selected period, because "still installing" is a question
 	// about now. Reported so a page can label it, instead of showing it beside
 	// figures that do follow the selector as though they matched.
-	InstallingWindowDays int               `json:"installing_window_days"`
-	SuccessRate          float64           `json:"success_rate"`
-	TopApps              []AppCount        `json:"top_apps"`
-	OsDistribution       []OsCount         `json:"os_distribution"`
-	MethodStats          []MethodCount     `json:"method_stats"`
-	PveVersions          []PveCount        `json:"pve_versions"`
-	TypeStats            []TypeCount       `json:"type_stats"`
-	ErrorAnalysis        []ErrorGroup      `json:"error_analysis"`
-	FailedApps           []AppFailure      `json:"failed_apps"`
-	RecentRecords        []TelemetryRecord `json:"recent_records"`
-	DailyStats           []DailyStat       `json:"daily_stats"`
+	InstallingWindowDays int           `json:"installing_window_days"`
+	SuccessRate          float64       `json:"success_rate"`
+	TopApps              []AppCount    `json:"top_apps"`
+	OsDistribution       []OsCount     `json:"os_distribution"`
+	MethodStats          []MethodCount `json:"method_stats"`
+	PveVersions          []PveCount    `json:"pve_versions"`
+	TypeStats            []TypeCount   `json:"type_stats"`
+	ErrorAnalysis        []ErrorGroup  `json:"error_analysis"`
+	FailedApps           []AppFailure  `json:"failed_apps"`
+	RecentRecords        []RunRecord   `json:"recent_records"`
+	DailyStats           []DailyStat   `json:"daily_stats"`
 
 	// Extended metrics
 	GPUStats           []GPUCount      `json:"gpu_stats"`
@@ -45,6 +45,14 @@ type DashboardData struct {
 	TotalAddons        int             `json:"total_addons"`
 	RepoSlugs          []RepoSlugCount `json:"repo_slugs"`
 	PlatformStats      []PlatformCount `json:"platform_stats"` // pve vs incus distribution
+
+	Days        int                       `json:"days"`
+	Summary     RunSummary                `json:"summary"`
+	Apps        []BreakdownRow            `json:"apps"`
+	Breakdown   map[string][]BreakdownRow `json:"breakdown"`
+	MinRuns     int                       `json:"min_runs"`
+	TopCauses   []Cause                   `json:"top_causes,omitempty"`
+	FailingApps []AppErrorStat            `json:"failing_apps,omitempty"`
 }
 
 // PlatformCount holds per-platform (pve/incus) installation counts.
@@ -95,8 +103,10 @@ type AppFailure struct {
 
 type DailyStat struct {
 	Date    string `json:"date"`
+	Runs    int    `json:"runs"`
 	Success int    `json:"success"`
 	Failed  int    `json:"failed"`
+	Aborted int    `json:"aborted"`
 }
 
 // Extended metric types
@@ -141,7 +151,24 @@ type ErrorAnalysisData struct {
 	RecentErrors    []ErrorRecord        `json:"recent_errors"`
 	StuckInstalling int                  `json:"stuck_installing"`
 	ErrorTimeline   []ErrorTimelinePoint `json:"error_timeline"`
-	Signatures      []ErrorSignature     `json:"signatures"` // grouped by failing command
+	Signatures      []ErrorSignature     `json:"signatures"`
+
+	Days             int            `json:"days"`
+	Summary          RunSummary     `json:"summary"`
+	Causes           []Cause        `json:"causes"`
+	Apps             []AppErrorStat `json:"apps"`
+	FailuresOverTime []TimePoint    `json:"failures_over_time"`
+	Bucket           string         `json:"bucket"`
+	Stuck            StuckRuns      `json:"stuck"`
+	MinRuns          int            `json:"min_runs"`
+}
+
+// TimePoint is one bucket of a run series.
+type TimePoint struct {
+	T       string `json:"t"`
+	Runs    int    `json:"runs"`
+	Failed  int    `json:"failed"`
+	Aborted int    `json:"aborted"`
 }
 
 // ErrorSignature groups failures by error_message (Kind "message") or, for rows
@@ -161,6 +188,7 @@ type ExitCodeStat struct {
 	Description string  `json:"description"`
 	Category    string  `json:"category"`
 	Percentage  float64 `json:"percentage"`
+	Apps        int     `json:"apps,omitempty"`
 }
 
 type CategoryStat struct {
@@ -228,16 +256,21 @@ type ScriptAnalysisData struct {
 }
 
 type ScriptStat struct {
-	App            string  `json:"app"`
-	Type           string  `json:"type"`
-	Total          int     `json:"total"`
-	Success        int     `json:"success"`
-	Failed         int     `json:"failed"`
-	Aborted        int     `json:"aborted"`
-	Installing     int     `json:"installing"`
-	SuccessRate    float64 `json:"success_rate"`
-	DaysOld        int     `json:"days_old"`
-	InstallsPerDay float64 `json:"installs_per_day"`
+	App              string  `json:"app"`
+	Type             string  `json:"type"`
+	Total            int     `json:"total"`
+	Success          int     `json:"success"`
+	Failed           int     `json:"failed"`
+	Aborted          int     `json:"aborted"`
+	Installing       int     `json:"installing"`
+	NoResult         int     `json:"no_result"`
+	SuccessRate      float64 `json:"success_rate"`
+	FailureRate      float64 `json:"failure_rate"`
+	DaysOld          int     `json:"days_old"`
+	InstallsPerDay   float64 `json:"installs_per_day"`
+	LastFailure      string  `json:"last_failure,omitempty"`
+	LastFailureCause string  `json:"last_failure_cause,omitempty"`
+	LastFailureID    string  `json:"last_failure_id,omitempty"`
 }
 
 type RecentScript struct {
@@ -392,17 +425,13 @@ func buildFailedApps(total, failed map[string]int, n int, minInstalls int) []App
 	return result
 }
 
-// buildDailyStats produces a dense per-day success/failed series for the last
-// `days` days (filling gaps with zeros so the chart has no holes).
-func buildDailyStats(success, failed map[string]int, days int) []DailyStat {
+// buildDailyStats produces a dense per-day series for the last `days` days.
+func buildDailyStats(byDate map[string]BreakdownRow, days int, now time.Time) []DailyStat {
 	result := make([]DailyStat, 0, days)
 	for i := days - 1; i >= 0; i-- {
-		date := time.Now().AddDate(0, 0, -i).Format("2006-01-02")
-		result = append(result, DailyStat{
-			Date:    date,
-			Success: success[date],
-			Failed:  failed[date],
-		})
+		date := now.UTC().AddDate(0, 0, -i).Format("2006-01-02")
+		r := byDate[date]
+		result = append(result, DailyStat{Date: date, Runs: r.Runs, Success: r.Success, Failed: r.Failed, Aborted: r.Aborted})
 	}
 	return result
 }

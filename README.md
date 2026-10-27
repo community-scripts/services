@@ -16,7 +16,7 @@ Each builds its own binary and its own image; they share nothing but the module.
 
 ## Brand assets
 
-The approved CS Amber mark is shared by all four telemetry dashboard views and
+The approved CS Amber mark is shared by all three telemetry dashboard views and
 their favicons. The editable [SVG master](cmd/telemetry/public/static/img/logo.svg)
 and its 512px [PNG avatar](cmd/telemetry/public/static/img/logo.png) are embedded
 in the telemetry binary. Brand images bypass the monochrome SVG icon inliner
@@ -79,28 +79,34 @@ flowchart LR
 
 ## Dashboard
 
-The built-in dashboard is publicly available at `https://telemetry.community-scripts.org/` and is served from `/` (with `/dashboard` kept as a compatibility alias). It provides real-time analytics:
+The dashboards are public at `https://telemetry.community-scripts.org/`:
 
-- **Installation Statistics** - Total installs, success/failure rates
-- **Top Applications** - Most installed scripts with counts
-- **Failure Analysis** - Scripts with highest failure rates (min. 10 installs)
-- **Resource Trends** - CPU, RAM, disk allocation over time
-- **OS Distribution** - Popular operating systems
-- **Proxmox Versions** - PVE version distribution
+- **`/`** (alias `/dashboard`): runs, success rate, failed, aborted and no-result
+  counts, top causes, the highest failure rates, the installation log with a
+  record dialog per run, top applications and a platform, type and OS breakdown.
+- **`/error-analysis`**: failed runs grouped by cause, applications with errors,
+  exit codes and failures over time. Every filter, open cause and app is in the
+  URL; causes and apps copy as Markdown and the view exports as JSON.
+- **`/script-analysis`**: per-script runs, failure rate and last failure.
 
-**Dashboard Features:**
-
-- Automatic cache warmup (every 4 minutes)
-- Configurable time range (7, 30, 90, 365 days)
-- Shows actual total count vs. analyzed sample size
-- Loading indicator during data fetch
+Every figure counts **runs**, not telemetry events. A run is all rows that share
+an `execution_id` (the `random_id` for clients that send none). Its outcome is
+its result: `success`, `failed`, `aborted` (cancelled or declined),
+`unknown` (no result: it stopped reporting and the cleanup marked it after
+`CLEANUP_STUCK_HOURS`) or `in_progress`. Its metadata is merged across its rows.
+Failure rates are failed / (success + failed). Rates leave out tools (`pve`),
+add-ons and `tool` runs unless the `type` filter names them.
 
 ## Project Structure
 
 ```
 cmd/telemetry/
   service.go        # HTTP handlers, rate limiting
-  clickhouse.go     # Storage and aggregation queries
+  clickhouse.go     # Storage, schema and cleanup queries
+  runs.go           # The run model and the install log query
+  runstats.go       # Breakdowns, causes and per-app errors
+  runpages.go       # Dashboard, error and script page data
+  runapi.go         # Filter parsing and cached JSON responses
   cache.go          # In-memory and Redis caching
   alerts.go         # SMTP alert system
   dashboard.go      # Shared dashboard data types
@@ -135,20 +141,54 @@ repository root because `//go:embed` cannot reach into a parent directory.
 | --------------------------- | ------ | ------------------------------------------------------------ |
 | `/`                         | GET    | HTML dashboard UI                                            |
 | `/dashboard`                | GET    | Compatibility alias for the dashboard UI                     |
+| `/error-analysis`           | GET    | Error analysis UI                                            |
+| `/script-analysis`          | GET    | Script analysis UI                                           |
 | `/telemetry`                | POST   | Receive telemetry data from scripts                          |
 | `/healthz`                  | GET    | Health check endpoint                                        |
 | `/api/dashboard`            | GET    | Dashboard data as JSON                                       |
-| `/api/records`              | GET    | Paginated installation log data                              |
+| `/api/records`              | GET    | Runs for the installation log, one record per run            |
+| `/api/errors`               | GET    | Everything on the error analysis page                        |
+| `/api/causes`               | GET    | Failed runs grouped by cause                                 |
+| `/api/app-errors`           | GET    | Applications with failures                                   |
 | `/api/scripts`              | GET    | Script analysis data                                         |
+| `/api/script-detail`        | GET    | One script's daily series, exit codes and recent runs        |
+| `/api/repo-slugs`           | GET    | owner/repo values for the repository filter                  |
 | `/api/exit-codes`           | GET    | Exit-code reference data                                     |
 | `/metrics`                  | GET    | Prometheus-style metrics output                              |
 | `/api/admin/migrate-script` | POST   | Moves promoted scripts' history from DevScripts to ProxmoxVE |
+
+The run endpoints share these filters: `days` (1 to 365), `repo` (`ProxmoxVE`,
+`DevScripts`, `external`), `slug` (owner/repo), `platform` (`pve`, `incus`),
+`type` (`lxc`, `vm`, `turnkey`, `pve`, `addon`, `tool`, `install` for LXC and VM,
+`all`) and `app` (exact name). Unknown values answer 400 with the accepted ones.
+
+- `/api/records` also takes `status` (`success`, `failed`, `aborted`, `unknown`,
+  `in_progress`, or a stage: `installing`, `validation`, `configuring`), `cause`
+  (a cause `key`), `message` (exact error message), `exit_code`, `category`,
+  `execution_id`, `random_id`, `search` (part of the app name), `os`, `page`,
+  `limit` (up to 100) and `sort` (`created`, `nsapp`, `status`, `os_type`,
+  `type`, `method`, `exit_code`, `duration`; prefix `-` for descending). `type`
+  defaults to `all`. Each record carries the merged run metadata plus
+  `started_at`, `finished_at`, `duration`, `last_stage`, `last_stage_at`,
+  `stages` (each with the seconds spent in it), `reason` (`no result`), `cause`,
+  `cause_kind` and `exit_description`.
+- `/api/causes` groups failed runs by `error_message`, else the failing command,
+  else the exit code (`kind` says which). Each cause has `failures`, `apps`,
+  `top_apps`, `setups` (distinct CPU, GPU, RAM speed, PVE and kernel
+  combinations), `first_seen`, `last_seen`, `last_24h`, `prev_24h`, `trend` and up
+  to three `examples` (execution IDs). `examples=full` adds `example_runs` with
+  traces; `limit` goes up to 200.
+- `/api/app-errors` lists apps with a failure: runs per outcome, `failure_rate`,
+  `setups_failed`, `top_cause`, `last_failure`, `last_success` and `failing_now`
+  (last failure newer than the last success). `limit` goes up to 500.
 
 `/api/admin/migrate-script` takes `{"slugs": ["vane"], "from": "DevScripts", "to": "ProxmoxVE"}` with
 `Authorization: Bearer $TELEMETRY_ADMIN_TOKEN` and answers `{"moved": n, "slugs": [...], "days": n}`.
 It returns 403 while `TELEMETRY_ADMIN_TOKEN` is unset, and a second call moves nothing.
 
-Operational endpoints also exist for alerts and cleanup workflows, including `/api/alerts`, `/api/cleanup/status`, and `POST /api/cleanup/run`.
+Operational endpoints also exist for alerts and cleanup workflows, including `/api/alerts`,
+`/api/cleanup/status` (runs still running, stalled past the cutoff and marked no result in
+the last 24 h) and `POST /api/cleanup/run`.
 
 ## Privacy & Compliance
 

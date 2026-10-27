@@ -1,563 +1,477 @@
-let charts = {};
-let currentData = null;
-let currentTheme = localStorage.getItem('theme') || 'dark';
-if (currentTheme === 'light') document.documentElement.setAttribute('data-theme', 'light');
+(function () {
+  'use strict';
+  const R = window.RunUI;
+  const esc = R.esc;
+  const $ = function (id) { return document.getElementById(id); };
 
-const catColors = {
-  'apt': '#ef4444', 'network': '#3b82f6', 'permission': '#f97316',
-  'command_not_found': '#a855f7', 'user_aborted': '#64748b', 'timeout': '#eab308',
-  'storage': '#ec4899', 'resource': '#f97316', 'dependency': '#22d3ee',
-  'signal': '#eab308', 'config': '#84cc16', 'unknown': '#64748b',
-  'uncategorized': '#94a3b8', 'service': '#06b6d4', 'database': '#8b5cf6',
-  'proxmox': '#f59e0b', 'shell': '#fb923c', 'build': '#d946ef',
-  'preflight': '#14b8a6'
-};
+  const KEYS = ['days', 'repo', 'platform', 'slug', 'type', 'search', 'csort', 'asort', 'cause', 'app', 'exit_code'];
+  const DEFAULTS = { days: '7', repo: 'all', platform: '', slug: '', type: '', search: '', csort: '-failures', asort: '-failed' };
+  const state = Object.assign({}, DEFAULTS);
+  let open = null;
+  let data = null;
+  let drill = { key: '', page: 1, records: [], total: 0, loaded: false };
 
-function escapeHtml(str) {
-  if (!str) return '';
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
-function escapeAttr(str) {
-  if (!str) return '';
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/\n/g, '&#10;').replace(/\r/g, '&#13;');
-}
-
-function toggleError(id) {
-  var s = document.getElementById(id + '-short');
-  var f = document.getElementById(id + '-full');
-  if (f && s) {
-    if (f.style.display === 'none') { f.style.display = 'block'; s.style.display = 'none'; }
-    else { f.style.display = 'none'; s.style.display = 'block'; }
+  function readURL() {
+    const q = new URLSearchParams(location.search);
+    KEYS.forEach(function (k) { if (q.has(k)) state[k] = q.get(k); });
+    if (q.get('cause')) open = { kind: 'cause', value: q.get('cause') };
+    else if (q.get('app')) open = { kind: 'app', value: q.get('app') };
+    else if (q.get('exit_code')) open = { kind: 'exit', value: q.get('exit_code') };
   }
-}
-
-function formatTimestamp(ts) {
-  if (!ts) return '-';
-  return new Date(ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
-}
-
-function getActiveFilters() {
-  const days = document.querySelector('.filter-btn.active')?.dataset.days || '1';
-  // Default: ALL sources
-  const repo = document.querySelector('.source-btn.active')?.dataset.repo || 'all';
-  const platform = document.querySelector('.platform-btn.active')?.dataset.platform || '';
-  const slug = document.getElementById('filterSlug')?.value || '';
-  return { days, repo, platform, slug };
-}
-
-function platformBadge(p) {
-  if (p === 'incus') return '<span class="platform-badge incus" title="Incus host">INCUS</span>';
-  if (p === 'pve') return '<span class="platform-badge pve" title="Proxmox VE host">PVE</span>';
-  return '<span class="platform-badge unknown">—</span>';
-}
-
-function formatDuration(seconds) {
-  if (!seconds) return '-';
-  if (seconds < 60) return seconds + 's';
-  const mins = Math.floor(seconds / 60);
-  const secs = seconds % 60;
-  if (mins < 60) return mins + 'm ' + secs + 's';
-  return Math.floor(mins / 60) + 'h ' + (mins % 60) + 'm';
-}
-
-async function loadRepoSlugOptions() {
-  const select = document.getElementById('filterSlug');
-  if (!select) return;
-  const { days, repo, slug } = getActiveFilters();
-  try {
-    const resp = await fetch('/api/repo-slugs?days=' + days + '&repo=' + encodeURIComponent(repo));
-    if (!resp.ok) return;
-    const data = await resp.json();
-    const slugs = data.repo_slugs || [];
-    const prev = slug;
-    select.innerHTML = '<option value="">All repositories</option>' +
-      slugs.map(s => '<option value="' + escapeAttr(s.slug) + '">' + escapeHtml(s.slug) + ' (' + s.count.toLocaleString() + ')</option>').join('');
-    if (prev && slugs.some(s => s.slug === prev)) {
-      select.value = prev;
-    }
-  } catch (e) {
-    console.log('Could not load repo slugs');
+  function writeURL() {
+    const q = new URLSearchParams();
+    Object.keys(DEFAULTS).forEach(function (k) { if (state[k] && state[k] !== DEFAULTS[k]) q.set(k, state[k]); });
+    if (open) q.set(open.kind === 'exit' ? 'exit_code' : open.kind, open.value);
+    const s = q.toString();
+    history.replaceState(null, '', location.pathname + (s ? '?' + s : ''));
   }
-}
-
-function onSlugFilterChange() {
-  refreshData();
-}
-
-async function fetchData() {
-  const { days, repo, platform, slug } = getActiveFilters();
-  try {
-    let url = '/api/errors?days=' + days + '&repo=' + repo;
-    if (platform) url += '&platform=' + encodeURIComponent(platform);
-    if (slug) url += '&slug=' + encodeURIComponent(slug);
-    const resp = await fetch(url);
-    if (!resp.ok) throw new Error('Fetch failed');
-    return await resp.json();
-  } catch (e) {
-    console.error(e);
-    return null;
+  function filterQuery() {
+    const q = new URLSearchParams({ days: state.days, repo: state.repo });
+    if (state.platform) q.set('platform', state.platform);
+    if (state.slug) q.set('slug', state.slug);
+    if (state.type) q.set('type', state.type);
+    return q;
   }
-}
+  function period() { return state.days === '1' ? 'today' : 'in the last ' + state.days + ' days'; }
 
-function updateStats(data) {
-  document.getElementById('totalErrors').textContent = (data.total_errors || 0).toLocaleString();
-  document.getElementById('failRate').textContent = (data.overall_fail_rate || 0).toFixed(1) + '%';
-  document.getElementById('stuckCount2').textContent = (data.stuck_installing || 0).toLocaleString();
-  document.getElementById('totalInstalls').textContent = (data.total_installs || 0).toLocaleString();
-
-  // Stuck banner
-  if (data.stuck_installing > 0) {
-    document.getElementById('stuckBanner').style.display = 'flex';
-    document.getElementById('stuckCount').textContent = data.stuck_installing;
-  } else {
-    document.getElementById('stuckBanner').style.display = 'none';
-  }
-}
-
-function updateExitCodeTable(exitCodes) {
-  const tbody = document.getElementById('exitCodeTable');
-  if (!exitCodes || exitCodes.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:24px;">No exit code data</td></tr>';
-    return;
-  }
-  const maxCount = Math.max(...exitCodes.map(e => e.count));
-  tbody.innerHTML = exitCodes.map(e => {
-    const barWidth = (e.count / maxCount * 100).toFixed(0);
-    const codeClass = e.exit_code === 0 ? 'ok' : 'err';
-    const catClass = (e.category || 'unknown').replace(/ /g, '_');
-    return '<tr>' +
-      '<td><span class="exit-code ' + codeClass + '">' + e.exit_code + '</span></td>' +
-      '<td>' + escapeHtml(e.description) + '</td>' +
-      '<td><span class="category-badge ' + catClass + '">' + escapeHtml(e.category) + '</span></td>' +
-      '<td><strong>' + e.count.toLocaleString() + '</strong></td>' +
-      '<td>' + e.percentage.toFixed(1) + '%</td>' +
-      '<td style="min-width:150px;"><div class="progress-bar"><div class="progress-bar-fill" style="width:' + barWidth + '%;background:var(--accent-red);"></div></div></td>' +
-      '</tr>';
-  }).join('');
-}
-
-function updateSignatureTable(signatures) {
-  const tbody = document.getElementById('signatureTable');
-  if (!tbody) return;
-  if (!signatures || signatures.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:24px;">No failure signatures in this period (older clients report neither a message nor the failing command)</td></tr>';
-    return;
-  }
-  tbody.innerHTML = signatures.map(s => {
-    const font = s.kind === 'message' ? '' : 'font-family:monospace;font-size:12px;';
-    return '<tr>' +
-      '<td style="' + font + 'max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escapeAttr(s.command) + '">' + escapeHtml(s.command) + '</td>' +
-      '<td><strong style="color:var(--accent-red);">' + s.count.toLocaleString() + '</strong></td>' +
-      '<td>' + (s.top_exit_code ? '<span class="exit-code err">' + s.top_exit_code + '</span>' : '-') + '</td>' +
-      '<td>' + s.unique_apps + '</td>' +
-      '<td style="font-size:12px;color:var(--text-secondary);max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escapeAttr(s.apps) + '">' + escapeHtml(s.apps) + '</td>' +
-      '</tr>';
-  }).join('');
-}
-
-function updateCategoryTable(categories) {
-  const tbody = document.getElementById('categoryTable');
-  if (!categories || categories.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:24px;">No category data</td></tr>';
-    return;
-  }
-  tbody.innerHTML = categories.map(c => {
-    const catClass = (c.category || 'unknown').replace(/ /g, '_');
-    return '<tr>' +
-      '<td><span class="category-badge ' + catClass + '">' + escapeHtml(c.category) + '</span></td>' +
-      '<td><strong>' + c.count.toLocaleString() + '</strong></td>' +
-      '<td>' + c.percentage.toFixed(1) + '%</td>' +
-      '<td style="font-size:12px;color:var(--text-secondary);max-width:400px;overflow:hidden;text-overflow:ellipsis;">' + escapeHtml(c.top_apps) + '</td>' +
-      '</tr>';
-  }).join('');
-}
-
-let allAppErrors = [];
-function updateAppErrorTable(apps) {
-  allAppErrors = apps || [];
-  filterAppTable();
-}
-
-function filterAppTable() {
-  const filter = (document.getElementById('appFilter').value || '').toLowerCase();
-  const filtered = filter ? allAppErrors.filter(a => a.app.toLowerCase().includes(filter)) : allAppErrors;
-  const tbody = document.getElementById('appErrorTable');
-  if (filtered.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--text-muted);padding:24px;">No matching apps</td></tr>';
-    return;
-  }
-  tbody.innerHTML = filtered.map((a, idx) => {
-    const typeClass = (a.type || '').toLowerCase();
-    const failRateColor = a.failure_rate > 50 ? 'var(--accent-red)' : a.failure_rate > 20 ? 'var(--accent-orange)' : 'var(--accent-yellow)';
-    const topCat = a.top_category ? '<span class="category-badge ' + a.top_category + '">' + escapeHtml(a.top_category) + '</span>' : '-';
-    const errorId = 'err-app-' + idx;
-    const shortError = escapeHtml((a.top_message || a.top_error || '-').substring(0, 120));
-    const fullError = escapeHtml(a.top_error || '-');
-    const isLong = a.top_message ? !!a.top_error : (a.top_error || '').length > 120;
-    return '<tr>' +
-      '<td><strong>' + escapeHtml(a.app) + '</strong></td>' +
-      '<td><span class="type-badge ' + typeClass + '">' + (a.type || '-').toUpperCase() + '</span></td>' +
-      '<td>' + a.total_count + '</td>' +
-      '<td style="color:var(--accent-red);font-weight:600;">' + a.failed_count + '</td>' +
-      '<td style="color:var(--accent-purple);">' + (a.aborted_count || 0) + '</td>' +
-      '<td style="color:' + failRateColor + ';font-weight:600;">' + a.failure_rate.toFixed(1) + '%</td>' +
-      '<td>' + (a.top_exit_code ? '<span class="exit-code err">' + a.top_exit_code + '</span>' : '-') + '</td>' +
-      '<td class="error-text">' +
-      '<div id="' + errorId + '-short">' + shortError + (isLong ? ' <a href="#" onclick="toggleError(\'' + errorId + '\');return false;" style="color:var(--accent-blue);font-size:11px;">show more</a>' : '') + '</div>' +
-      (isLong ? '<div id="' + errorId + '-full" style="display:none;white-space:pre-wrap;word-break:break-all;max-height:600px;overflow-y:auto;">' + fullError + ' <a href="#" onclick="toggleError(\'' + errorId + '\');return false;" style="color:var(--accent-blue);font-size:11px;">show less</a></div>' : '') +
-      '</td>' +
-      '<td><button class="btn issue-btn" data-app="' + escapeAttr(a.app) + '" data-exit="' + (a.top_exit_code || 0) + '" data-error="' + escapeAttr(a.top_error || '') + '" data-rate="' + a.failure_rate.toFixed(1) + '">🐛 Issue</button></td>' +
-      '</tr>';
-  }).join('');
-}
-
-// ── Recent Error Log: filterable table + detail modal ──
-let allRecentErrors = [];
-
-function updateRecentErrors(errors) {
-  allRecentErrors = errors || [];
-  filterRecentTable();
-}
-
-// parseErrorText splits the structured error format into {header, trace}.
-// Formats: "exit_code=N | desc | at line L: cmd\n---\n<trace>"  (host, v3)
-//          "exit_code=N | desc|---|line1|line2|..."             (legacy container)
-function parseErrorText(raw) {
-  raw = raw || '';
-  let header = '', trace = '';
-  const nlIdx = raw.indexOf('\n---\n');
-  if (nlIdx !== -1) {
-    header = raw.substring(0, nlIdx).trim();
-    trace = raw.substring(nlIdx + 5).trim();
-  } else {
-    const pipeIdx = raw.indexOf('|---|');
-    if (pipeIdx !== -1) {
-      header = raw.substring(0, pipeIdx).trim();
-      trace = raw.substring(pipeIdx + 5).replace(/\|/g, '\n').trim();
-    } else if (raw.indexOf('\n') !== -1) {
-      header = raw.substring(0, raw.indexOf('\n')).trim();
-      trace = raw.substring(raw.indexOf('\n') + 1).trim();
-    } else {
-      header = raw.trim();
-    }
-  }
-  return { header: header, trace: trace };
-}
-
-// "exit_code=N | explanation | step: … | in fn | at line L: cmd"; v1/v2 headers have fewer segments.
-function parseErrorHeader(header) {
-  const out = { explanation: '', step: '', fn: '', at: '' };
-  if (!/^exit_code=\d+/.test(header || '')) return out;
-  const atIdx = header.indexOf('| at line ');
-  if (atIdx !== -1) {
-    out.at = header.substring(atIdx + 2).trim();
-    header = header.substring(0, atIdx);
-  }
-  const rest = [];
-  header.split('|').slice(1).forEach(function(seg) {
-    seg = seg.trim();
-    if (!seg) return;
-    if (seg.indexOf('step: ') === 0) out.step = seg.substring(6);
-    else if (/^in [\w:.-]+$/.test(seg)) out.fn = seg.substring(3);
-    else rest.push(seg);
-  });
-  out.explanation = rest.join(' — ');
-  return out;
-}
-
-// errorSummary: "exit_code=1 | General error | at line 42: npm run build" → "General error — at line 42: npm run build"
-function errorSummary(raw) {
-  const parsed = parseErrorText(raw);
-  if (!parsed.header) return '-';
-  const h = parseErrorHeader(parsed.header);
-  return [h.explanation, h.at].filter(Boolean).join(' — ') || parsed.header;
-}
-
-function filterRecentTable() {
-  const filter = (document.getElementById('recentFilter')?.value || '').toLowerCase();
-  const errors = filter
-    ? allRecentErrors.filter(e => [e.nsapp, e.error, e.error_message, e.error_step].some(v => (v || '').toLowerCase().includes(filter)))
-    : allRecentErrors;
-
-  const tbody = document.getElementById('recentErrorTable');
-  if (!errors || errors.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--text-muted);padding:24px;">No recent errors</td></tr>';
-    return;
-  }
-  tbody.innerHTML = errors.map((e, idx) => {
-    const statusClass = e.status || 'unknown';
-    const typeClass = (e.type || '').toLowerCase();
-    const codeClass = e.exit_code === 0 ? 'ok' : 'err';
-    const catClass = (e.error_category || 'unknown').replace(/ /g, '_');
-    const os = e.os_type ? e.os_type + (e.os_version ? ' ' + e.os_version : '') : '-';
-    const summary = e.error_message || errorSummary(e.error);
-    const origIdx = allRecentErrors.indexOf(e);
-    return '<tr class="clickable-row" onclick="showErrorDetail(' + origIdx + ')" style="cursor:pointer;">' +
-      '<td><span class="status-badge ' + statusClass + '">' + escapeHtml(e.status) + '</span></td>' +
-      '<td>' + platformBadge(e.platform) + '</td>' +
-      '<td><span class="type-badge ' + typeClass + '">' + (e.type || '-').toUpperCase() + '</span></td>' +
-      '<td><strong>' + escapeHtml(e.nsapp) + '</strong></td>' +
-      '<td><span class="exit-code ' + codeClass + '">' + e.exit_code + '</span></td>' +
-      '<td><span class="category-badge ' + catClass + '">' + escapeHtml(e.error_category || 'unknown') + '</span></td>' +
-      '<td class="error-text" style="max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escapeAttr(summary) + '">' + escapeHtml(summary) + '</td>' +
-      '<td>' + escapeHtml(os) + '</td>' +
-      '<td>' + formatDuration(e.install_duration) + '</td>' +
-      '<td style="white-space:nowrap;">' + formatTimestamp(e.created) + '</td>' +
-      '<td onclick="event.stopPropagation()"><button class="btn issue-btn" data-app="' + escapeAttr(e.nsapp) + '" data-exit="' + e.exit_code + '" data-error="' + escapeAttr(e.error || '') + '" data-rate="0">🐛</button></td>' +
-      '</tr>';
-  }).join('');
-}
-
-function showErrorDetail(idx) {
-  const e = allRecentErrors[idx];
-  if (!e) return;
-  const parsed = parseErrorText(e.error);
-  const h = parseErrorHeader(parsed.header);
-  const os = e.os_type ? e.os_type + (e.os_version ? ' ' + e.os_version : '') : '—';
-
-  document.getElementById('errorDetailTitle').textContent = e.nsapp + ' — exit ' + e.exit_code;
-
-  let html = '<div class="detail-chips">';
-  html += '<span class="status-badge ' + (e.status || 'unknown') + '">' + escapeHtml(e.status) + '</span>';
-  html += platformBadge(e.platform);
-  html += '<span class="type-badge ' + (e.type || '').toLowerCase() + '">' + (e.type || '-').toUpperCase() + '</span>';
-  html += '<span class="category-badge ' + (e.error_category || 'unknown') + '">' + escapeHtml(e.error_category || 'unknown') + '</span>';
-  html += '</div>';
-
-  html += '<div class="detail-meta-grid">';
-  html += '<div><span class="dm-label">OS</span><span>' + escapeHtml(os) + '</span></div>';
-  html += '<div><span class="dm-label">' + (e.platform === 'incus' ? 'Incus' : 'PVE') + ' Version</span><span>' + escapeHtml(e.pve_version || '—') + '</span></div>';
-  html += '<div><span class="dm-label">Duration</span><span>' + formatDuration(e.install_duration) + '</span></div>';
-  html += '<div><span class="dm-label">Time</span><span>' + formatTimestamp(e.created) + '</span></div>';
-  const step = e.error_step || h.step;
-  const fn = e.failed_function || h.fn;
-  if (step) html += '<div><span class="dm-label">Step</span><span>' + escapeHtml(step) + '</span></div>';
-  if (e.error_phase) html += '<div><span class="dm-label">Phase</span><span>' + escapeHtml(e.error_phase) + '</span></div>';
-  if (fn) html += '<div><span class="dm-label">Function</span><span style="font-family:monospace;font-size:12px;">' + escapeHtml(fn) + '</span></div>';
-  if (e.execution_id) {
-    html += '<div style="grid-column:1/-1;"><span class="dm-label">Execution ID</span><span style="font-family:monospace;font-size:11px;">' + escapeHtml(e.execution_id) + '</span></div>';
-  }
-  if (e.error_message && parsed.header) {
-    html += '<div style="grid-column:1/-1;"><span class="dm-label">Header</span><span style="font-family:monospace;font-size:11px;word-break:break-word;">' + escapeHtml(parsed.header) + '</span></div>';
-  }
-  html += '</div>';
-
-  const headline = e.error_message || parsed.header;
-  if (headline) {
-    html += '<div class="error-header-line">' + escapeHtml(headline) + '</div>';
-  }
-
-  if (parsed.trace) {
-    html += '<div class="error-trace-header"><span>Error Trace</span>' +
-      '<button class="btn btn-sm" onclick="copyDetailTrace(this)">📋 Copy</button></div>';
-    html += '<pre class="error-trace-box" id="detailTraceBox" data-trace="' + escapeAttr(parsed.trace) + '">' + escapeHtml(parsed.trace) + '</pre>';
-  } else {
-    html += '<div style="color:var(--text-muted);padding:12px 0;">No error trace was captured for this record.</div>';
-  }
-
-  html += '<div style="display:flex;justify-content:flex-end;margin-top:16px;">' +
-    '<button class="btn issue-btn" data-app="' + escapeAttr(e.nsapp) + '" data-exit="' + e.exit_code + '" data-error="' + escapeAttr(e.error || '') + '" data-rate="0">🐛 Create GitHub Issue</button></div>';
-
-  document.getElementById('errorDetailBody').innerHTML = html;
-  document.getElementById('errorDetailModal').classList.add('active');
-}
-
-function closeErrorDetail() {
-  document.getElementById('errorDetailModal').classList.remove('active');
-}
-
-function copyDetailTrace(btn) {
-  const box = document.getElementById('detailTraceBox');
-  const text = box ? (box.getAttribute('data-trace') || box.textContent) : '';
-  navigator.clipboard.writeText(text).then(function() {
-    const orig = btn.textContent;
-    btn.textContent = '✅ Copied!';
-    setTimeout(function() { btn.textContent = orig; }, 1500);
-  });
-}
-
-function updateCharts(data) {
-  // Timeline chart
-  if (charts.timeline) charts.timeline.destroy();
-  const timeline = data.error_timeline || [];
-  charts.timeline = new Chart(document.getElementById('timelineChart'), {
-    type: 'line',
-    data: {
-      labels: timeline.map(d => d.date.slice(5)),
-      datasets: [
-        { label: 'Failed', data: timeline.map(d => d.failed), borderColor: '#ef4444', backgroundColor: 'rgba(239,68,68,0.1)', fill: true, tension: 0.4, borderWidth: 2 },
-        { label: 'Aborted', data: timeline.map(d => d.aborted), borderColor: '#a855f7', backgroundColor: 'rgba(168,85,247,0.1)', fill: true, tension: 0.4, borderWidth: 2 }
-      ]
-    },
-    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: '#8b949e', usePointStyle: true } } }, scales: { x: { ticks: { color: '#8b949e' }, grid: { color: '#2d3748' } }, y: { ticks: { color: '#8b949e' }, grid: { color: '#2d3748' } } } }
-  });
-
-  // Category pie chart
-  if (charts.category) charts.category.destroy();
-  const cats = data.category_stats || [];
-  charts.category = new Chart(document.getElementById('categoryChart'), {
-    type: 'doughnut',
-    data: {
-      labels: cats.map(c => c.category),
-      datasets: [{ data: cats.map(c => c.count), backgroundColor: cats.map(c => catColors[c.category] || '#64748b'), borderWidth: 0 }]
-    },
-    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'right', labels: { color: '#8b949e', padding: 12 } } } }
-  });
-}
-
-// GitHub Issue Modal
-function openIssueModal(app, exitCode, errorText, failRate) {
-  const title = '[Telemetry] ' + app + ': Error (exit code ' + exitCode + ')';
-  const fence = String.fromCharCode(96, 96, 96);
-  const body = '## Telemetry Error Report\n\n' +
-    '**Application:** ' + app + '\n' +
-    '**Exit Code:** ' + exitCode + '\n' +
-    '**Failure Rate:** ' + failRate + '%\n\n' +
-    '### Error Details\n' + fence + '\n' + errorText + '\n' + fence + '\n\n' +
-    '---\n*Created from telemetry error analysis dashboard.*';
-  document.getElementById('issueTitle').value = title;
-  document.getElementById('issueBody').value = body;
-  document.getElementById('issueAlert').style.display = 'none';
-  document.getElementById('issueModal').classList.add('active');
-}
-
-function closeIssueModal() {
-  document.getElementById('issueModal').classList.remove('active');
-}
-
-async function submitIssue() {
-  const btn = document.getElementById('submitIssueBtn');
-  const alert = document.getElementById('issueAlert');
-  const password = document.getElementById('issuePassword').value;
-  if (!password) { alert.className = 'alert-box error'; alert.textContent = 'Password required'; alert.style.display = 'block'; return; }
-
-  btn.disabled = true;
-  btn.textContent = 'Creating...';
-
-  try {
-    const resp = await fetch('/api/github/create-issue', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        password: password,
-        title: document.getElementById('issueTitle').value,
-        body: document.getElementById('issueBody').value,
-        labels: document.getElementById('issueLabels').value.split(',').map(l => l.trim()).filter(Boolean)
-      })
+  function syncControls() {
+    document.querySelectorAll('.seg[data-filter]').forEach(function (seg) {
+      const key = seg.getAttribute('data-filter');
+      seg.querySelectorAll('button').forEach(function (b) {
+        b.setAttribute('aria-pressed', String(b.getAttribute('data-value') === state[key]));
+      });
     });
-    const data = await resp.json();
-    if (resp.ok && data.success) {
-      alert.className = 'alert-box success';
-      alert.innerHTML = '✅ Issue created! <a href="' + data.issue_url + '" target="_blank" style="color:var(--accent-green);">View on GitHub →</a>';
-      alert.style.display = 'block';
-    } else {
-      throw new Error(data.error || data.message || resp.statusText || 'Failed');
-    }
-  } catch (e) {
-    alert.className = 'alert-box error';
-    alert.textContent = '❌ ' + e.message;
-    alert.style.display = 'block';
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Create Issue';
+    $('fType').value = state.type;
+    $('fSearch').value = state.search;
+    document.querySelectorAll('[data-csort]').forEach(function (b) { sortMark(b, b.getAttribute('data-csort'), state.csort); });
+    document.querySelectorAll('[data-asort]').forEach(function (b) { sortMark(b, b.getAttribute('data-asort'), state.asort); });
+    $('apiLink').href = '/api/errors?' + filterQuery().toString();
+    $('apiLink').textContent = '/api/errors?' + filterQuery().toString();
   }
-}
+  function sortMark(b, field, sort) {
+    const dir = sort === field ? 'ascending' : sort === '-' + field ? 'descending' : '';
+    if (dir) b.setAttribute('aria-sort', dir); else b.removeAttribute('aria-sort');
+  }
 
-// Cleanup Modal
-function triggerCleanup() {
-  document.getElementById('cleanupAlert').style.display = 'none';
-  document.getElementById('cleanupModal').classList.add('active');
-}
-
-function closeCleanupModal() {
-  document.getElementById('cleanupModal').classList.remove('active');
-}
-
-async function runCleanup() {
-  const btn = document.getElementById('runCleanupBtn');
-  const alert = document.getElementById('cleanupAlert');
-  const password = document.getElementById('cleanupPassword').value;
-  if (!password) { alert.className = 'alert-box error'; alert.textContent = 'Password required'; alert.style.display = 'block'; return; }
-
-  btn.disabled = true;
-  btn.textContent = 'Running...';
-
-  try {
-    const resp = await fetch('/api/cleanup/run', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password: password })
+  function sorted(list, sort) {
+    const desc = sort.charAt(0) === '-';
+    const key = desc ? sort.slice(1) : sort;
+    return list.slice().sort(function (a, b) {
+      const x = a[key], y = b[key];
+      const c = typeof x === 'number' && typeof y === 'number' ? x - y : String(x || '').localeCompare(String(y || ''));
+      return desc ? -c : c;
     });
-    const data = await resp.json();
-    if (resp.ok) {
-      alert.className = 'alert-box success';
-      alert.textContent = '✅ ' + data.message;
-      alert.style.display = 'block';
-      setTimeout(() => { closeCleanupModal(); refreshData(); }, 2000);
-    } else {
-      throw new Error(data.message || resp.statusText || 'Failed');
-    }
-  } catch (e) {
-    alert.className = 'alert-box error';
-    alert.textContent = '❌ ' + e.message;
-    alert.style.display = 'block';
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Run Cleanup';
   }
-}
+  function matches(text) {
+    const s = state.search.trim().toLowerCase();
+    return !s || text.toLowerCase().indexOf(s) !== -1;
+  }
 
-async function refreshData() {
-  await loadRepoSlugOptions();
-  const data = await fetchData();
-  if (!data) return;
-  currentData = data;
-  updateStats(data);
-  updateExitCodeTable(data.exit_code_stats);
-  updateSignatureTable(data.signatures);
-  updateCategoryTable(data.category_stats);
-  updateAppErrorTable(data.app_errors);
-  updateRecentErrors(data.recent_errors);
-  updateCharts(data);
-}
+  function card(label, value, sub, cls) {
+    return '<div class="card ' + (cls || '') + '"><div class="card-label">' + esc(label) + '</div><div class="card-value">' + value +
+      '</div><div class="card-sub">' + sub + '</div></div>';
+  }
+  function renderSummary(s) {
+    const finished = s.success + s.failed;
+    $('summary').innerHTML =
+      card('Failed runs', R.num(s.failed), 'of ' + R.num(finished) + ' finished runs', 'bad') +
+      card('Failure rate', finished ? R.pct(s.failure_rate) : 'No data', 'failed divided by finished runs', 'bad') +
+      card('No result', R.num(s.no_result), 'stopped reporting before a result', 'silent') +
+      card('Still running', R.num(s.in_progress), 'no result yet', '') +
+      card('Apps failing', R.num(s.apps_failing), 'with at least one failed run', '');
+  }
 
-// Filter button handling
-document.querySelectorAll('.filter-btn').forEach(btn => {
-  btn.addEventListener('click', function() {
-    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
-    this.classList.add('active');
-    refreshData();
-  });
-});
-document.querySelectorAll('.source-btn').forEach(btn => {
-  btn.addEventListener('click', function() {
-    document.querySelectorAll('.source-btn').forEach(b => b.classList.remove('active'));
-    this.classList.add('active');
-    const slugSelect = document.getElementById('filterSlug');
-    if (slugSelect) slugSelect.value = '';
-    refreshData();
-  });
-});
-document.querySelectorAll('.platform-btn').forEach(btn => {
-  btn.addEventListener('click', function() {
-    document.querySelectorAll('.platform-btn').forEach(b => b.classList.remove('active'));
-    this.classList.add('active');
-    refreshData();
-  });
-});
-document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeIssueModal(); closeCleanupModal(); closeErrorDetail(); } });
+  function renderStuck(st) {
+    const parts = [];
+    if (st.running) parts.push('<p>' + R.runs(st.running) + (st.running === 1 ? ' is' : ' are') + ' still running: the last report came in under ' + st.after_hours + ' hours ago.</p>');
+    if (st.stalled) {
+      parts.push('<p>' + R.runs(st.stalled) + ' stopped reporting more than ' + st.after_hours +
+        ' hours ago. The next cleanup marks them as no result. <button type="button" class="btn btn-xs" id="cleanupOpen">Run the cleanup now</button></p>');
+    }
+    if (st.no_result) parts.push('<p>' + R.runs(st.no_result) + ' that started in the last 24 hours ended without a result.</p>');
+    $('stuckBanner').innerHTML = parts.join('');
+    $('stuckBanner').hidden = !parts.length;
+  }
 
-// Event delegation for Issue buttons (avoids inline onclick escaping issues)
-document.addEventListener('click', function(e) {
-  var btn = e.target.closest('.issue-btn');
-  if (!btn) return;
-  var app = btn.getAttribute('data-app') || '';
-  var exitCode = parseInt(btn.getAttribute('data-exit') || '0', 10);
-  var errorText = btn.getAttribute('data-error') || '';
-  var rate = parseFloat(btn.getAttribute('data-rate') || '0');
-  openIssueModal(app, exitCode, errorText, rate);
-});
+  function isOpen(kind, value) { return open && open.kind === kind && String(open.value) === String(value); }
+  function drillRow(cols) { return '<tr class="drill-row"><td colspan="' + cols + '"><div class="drill" id="drillBox" aria-live="polite">Loading runs</div></td></tr>'; }
 
-// Initial load
-refreshData();
+  function causeRow(c, i) {
+    const meta = [];
+    if (c.category) meta.push('<span class="cat">' + esc(c.category) + '</span>');
+    if (c.exit_code) meta.push('<span class="exit" title="' + esc(c.exit_description) + '">exit ' + c.exit_code + '</span>');
+    if (c.top_apps && c.top_apps.length) meta.push(esc(c.top_apps.join(', ')));
+    const example = c.example_message ? '<div class="cause-example">Example: ' + esc(c.example_message) + '</div>' : '';
+    return '<tr class="open-row' + (isOpen('cause', c.key) ? ' is-open' : '') + '" data-open="cause" data-idx="' + i + '">' +
+      '<td class="cause-cell"><button type="button" class="row-toggle' + (c.kind === 'command' ? ' is-code' : '') + '" aria-expanded="' + isOpen('cause', c.key) +
+      '" title="' + esc(c.message) + '">' + esc(c.message) + '</button><div class="cause-meta">' + meta.join(' ') + '</div>' + example + '</td>' +
+      '<td class="num strong bad">' + R.num(c.failures) + '</td><td class="num">' + R.num(c.apps) + '</td><td class="num">' + R.num(c.setups) + '</td>' +
+      '<td class="nowrap">' + esc(R.dateTime(c.first_seen)) + '</td><td class="nowrap" title="' + esc(R.dateTime(c.last_seen)) + '">' + esc(R.ago(c.last_seen)) + '</td>' +
+      '<td class="num">' + R.trend(c) + '</td></tr>';
+  }
+
+  function renderCauses() {
+    const all = (data && data.causes) || [];
+    const list = sorted(all.filter(function (c) {
+      return matches([c.message, c.key, c.example_message || '', (c.top_apps || []).join(' '), c.category].join(' '));
+    }), state.csort);
+    let html = '';
+    let found = false;
+    list.forEach(function (c) {
+      html += causeRow(c, all.indexOf(c));
+      if (isOpen('cause', c.key)) { html += drillRow(7); found = true; }
+    });
+    if (open && open.kind === 'cause' && !found) {
+      html = '<tr class="is-open"><td colspan="7" class="cause-cell"><strong>Cause from the link:</strong> ' + esc(open.value) + '</td></tr>' + drillRow(7) + html;
+    }
+    $('causesBody').innerHTML = html || '<tr><td colspan="7" class="empty">' + (all.length ? 'No cause matches the filter.' : 'No failed runs ' + period() + '.') + '</td></tr>';
+  }
+
+  function renderApps() {
+    const all = (data && data.apps) || [];
+    $('appsNote').textContent = 'Failing now means the last failure is newer than the last success. Rates are shown for every app; the dashboard ranks only apps with at least ' +
+      ((data && data.min_runs) || 0) + ' finished runs.';
+    const list = sorted(all.filter(function (a) { return matches(a.app + ' ' + (a.top_cause_message || '')); }), state.asort);
+    let html = '';
+    let found = false;
+    list.forEach(function (a) {
+      const i = all.indexOf(a);
+      const now = a.failing_now ? ' <span class="chip chip-failed">Failing now</span>' : '';
+      html += '<tr class="open-row' + (isOpen('app', a.app) ? ' is-open' : '') + '" data-open="app" data-idx="' + i + '">' +
+        '<td class="nowrap"><button type="button" class="row-toggle" aria-expanded="' + isOpen('app', a.app) + '">' + esc(a.app) + '</button> ' + R.typeBadge(a.type) + now + '</td>' +
+        '<td class="num">' + R.num(a.runs) + '</td><td class="num bad strong">' + R.num(a.failed) + '</td>' +
+        '<td class="num ' + (a.failure_rate >= 30 ? 'bad' : a.failure_rate >= 15 ? 'warn' : '') + '">' + R.pct(a.failure_rate) + '</td>' +
+        '<td class="num">' + R.num(a.setups_failed) + '</td>' +
+        '<td class="top-cause' + (a.top_cause_kind === 'command' ? ' is-code' : '') + '" title="' + esc(a.top_cause_message) + '">' + esc(a.top_cause_message || '') + '</td>' +
+        '<td class="nowrap" title="' + esc(R.dateTime(a.last_failure)) + '">' + esc(R.ago(a.last_failure)) + '</td>' +
+        '<td class="nowrap" title="' + esc(R.dateTime(a.last_success)) + '">' + (a.last_success ? esc(R.ago(a.last_success)) : '<span class="muted">none in period</span>') + '</td></tr>';
+      if (isOpen('app', a.app)) { html += drillRow(8); found = true; }
+    });
+    if (open && open.kind === 'app' && !found) {
+      html = '<tr class="is-open"><td colspan="8"><strong>' + esc(open.value) + '</strong> <span class="muted">has no failed runs with these filters.</span></td></tr>' + drillRow(8) + html;
+    }
+    $('appsBody').innerHTML = html || '<tr><td colspan="8" class="empty">' + (all.length ? 'No app matches the filter.' : 'No app failed ' + period() + '.') + '</td></tr>';
+  }
+
+  function renderExits() {
+    const list = (data && data.exit_code_stats) || [];
+    let html = '';
+    list.forEach(function (e, i) {
+      html += '<tr class="open-row' + (isOpen('exit', e.exit_code) ? ' is-open' : '') + '" data-open="exit" data-idx="' + i + '">' +
+        '<td class="num"><button type="button" class="row-toggle mono" aria-expanded="' + isOpen('exit', e.exit_code) + '">' + e.exit_code + '</button></td>' +
+        '<td>' + esc(e.description) + '</td><td class="num">' + R.num(e.count) + '</td><td class="num">' + R.num(e.apps) + '</td></tr>';
+      if (isOpen('exit', e.exit_code)) html += drillRow(4);
+    });
+    $('exitBody').innerHTML = html || '<tr><td colspan="4" class="empty">No failed runs ' + period() + '.</td></tr>';
+  }
+
+  function renderChart() {
+    const pts = ((data && data.failures_over_time) || []).map(function (p) {
+      return { t: p.t, failed: p.failed, other: Math.max(0, p.runs - p.failed), runs: p.runs };
+    });
+    const hourly = data && data.bucket === 'hour';
+    $('chartTitle').textContent = hourly ? 'Failures per hour' : 'Failures per day';
+    if (!pts.some(function (p) { return p.runs; })) {
+      $('failChart').innerHTML = '<p class="empty">No runs ' + period() + '.</p>';
+      return;
+    }
+    $('failChart').innerHTML = R.columnsSVG(pts, [
+      { key: 'failed', cls: 'c-bad', name: 'failed' },
+      { key: 'other', cls: 'c-runs', name: 'other runs' },
+    ], { title: 'Failed runs and other runs per ' + (hourly ? 'hour' : 'day'), label: function (p) { return hourly ? p.t.slice(11, 16) : p.t.slice(5); } }) +
+      '<div class="legend"><span class="key c-bad"></span>Failed <span class="key c-runs"></span>Other runs</div>';
+  }
+
+  function renderAll() {
+    renderCauses();
+    renderApps();
+    renderExits();
+    if (!open) return;
+    const key = open.kind + ':' + open.value;
+    if (drill.key === key && drill.loaded) {
+      renderDrill();
+    } else {
+      drill = { key: key, page: 1, records: [], total: 0, loaded: false };
+      loadDrill();
+    }
+  }
+
+  function openItem() {
+    if (!open || !data) return null;
+    if (open.kind === 'cause') return (data.causes || []).find(function (c) { return c.key === open.value; }) || { key: open.value, message: open.value };
+    if (open.kind === 'app') return (data.apps || []).find(function (a) { return a.app === open.value; }) || { app: open.value };
+    return (data.exit_code_stats || []).find(function (e) { return String(e.exit_code) === String(open.value); }) || { exit_code: Number(open.value) };
+  }
+
+  function drillQuery() {
+    const q = filterQuery();
+    q.set('type', state.type || 'install');
+    q.set('status', 'failed');
+    if (open.kind === 'cause') q.set('cause', open.value);
+    if (open.kind === 'app') q.set('app', open.value);
+    if (open.kind === 'exit') q.set('exit_code', open.value);
+    return q;
+  }
+
+  function drillTitle(item) {
+    if (open.kind === 'cause') return 'Failed runs with this cause';
+    if (open.kind === 'app') return 'Failed runs of ' + item.app;
+    return 'Failed runs with exit code ' + open.value;
+  }
+
+  async function loadDrill() {
+    const box = $('drillBox');
+    if (!box) return;
+    const q = drillQuery();
+    q.set('page', drill.page);
+    q.set('limit', 20);
+    try {
+      const res = await R.getJSON('/api/records?' + q.toString());
+      drill.records = drill.page === 1 ? (res.records || []) : drill.records.concat(res.records || []);
+      drill.total = res.total || 0;
+      drill.loaded = true;
+      renderDrill();
+    } catch (e) {
+      box.innerHTML = '<p class="empty">Could not load the runs: ' + esc(e.message) + '</p>';
+    }
+  }
+
+  function renderDrill() {
+    const box = $('drillBox');
+    if (!box) return;
+    const item = openItem();
+    const apiQ = drillQuery();
+    let html = '<div class="drill-head"><div><h3>' + esc(drillTitle(item)) + '</h3><p class="muted">' + R.runs(drill.total) + ' ' + esc(period()) + '</p></div>' +
+      '<div class="rd-actions"><button type="button" class="btn" data-drill="markdown">Copy as Markdown</button>' +
+      '<a class="btn" href="/api/records?' + esc(apiQ.toString()) + '" target="_blank" rel="noopener">Runs as JSON</a>' +
+      '<button type="button" class="btn" data-drill="issue">Create GitHub issue</button>' +
+      '<button type="button" class="btn" data-drill="close">Close</button></div></div>';
+    if (!drill.records.length) {
+      box.innerHTML = html + '<p class="empty">No failed run matches.</p>';
+      return;
+    }
+    html += '<div class="table-wrapper"><table class="compact drill-table"><thead><tr><th scope="col">Started</th><th scope="col">App</th>' +
+      (open.kind === 'cause' ? '' : '<th scope="col">Message</th>') +
+      '<th scope="col">Step</th><th scope="col">OS</th><th scope="col">Host</th><th scope="col">Setup</th><th scope="col" class="num">Duration</th></tr></thead><tbody>' +
+      drill.records.map(function (r, i) {
+        return '<tr class="run-row" data-drun="' + i + '"><td class="nowrap"><button type="button" class="run-open" data-drun="' + i + '">' + esc(R.dateTime(r.started_at)) + '</button></td>' +
+          '<td class="nowrap">' + esc(r.nsapp) + ' ' + R.typeBadge(r.type) + '</td>' +
+          (open.kind === 'cause' ? '' : '<td class="top-cause" title="' + esc(R.headline(r)) + '">' + esc(R.headline(r)) + '</td>') +
+          '<td>' + esc(r.error_step || '') + (r.error_phase ? ' <span class="muted">(' + esc(r.error_phase) + ')</span>' : '') + '</td>' +
+          '<td class="nowrap">' + esc(R.osName(r)) + '</td><td class="nowrap">' + esc([R.hostName(r), r.kernel_version].filter(Boolean).join(', ')) + '</td>' +
+          '<td class="setup" title="' + esc(R.setupName(r)) + '">' + esc(R.setupName(r)) + '</td><td class="num">' + esc(R.duration(r.duration)) + '</td></tr>';
+      }).join('') + '</tbody></table></div>';
+    if (drill.records.length < drill.total) {
+      html += '<div class="drill-more"><button type="button" class="btn" data-drill="more">Show ' + Math.min(20, drill.total - drill.records.length) + ' more</button></div>';
+    }
+    box.innerHTML = html;
+  }
+
+  function runsURL() { return location.origin + '/api/records?' + drillQuery().toString(); }
+
+  function appMarkdown(a, runs) {
+    let md = '## ' + a.app + ': ' + R.num(a.failed) + (a.failed === 1 ? ' failed run ' : ' failed runs ') + period() + '\n\n';
+    md += [
+      'Runs: ' + R.num(a.runs) + ' (' + R.num(a.success) + ' success, ' + R.num(a.failed) + ' failed, ' + R.num(a.aborted) + ' aborted, ' +
+        R.num(a.no_result) + ' no result, ' + R.num(a.in_progress) + ' in progress)',
+      'Failure rate: ' + R.pct(a.failure_rate) + ' of finished runs',
+      'Distinct setups among failures: ' + R.num(a.setups_failed),
+      'Top cause: ' + (a.top_cause_message || 'none'),
+      'Last failure: ' + (a.last_failure || 'none') + ', last success: ' + (a.last_success || 'none') + (a.failing_now ? ' (failing now)' : ''),
+      'All runs: ' + runsURL(),
+    ].map(function (l) { return '- ' + l; }).join('\n') + '\n';
+    (runs || []).forEach(function (r) { md += '\n' + R.runMarkdown(r, 3); });
+    return md;
+  }
+
+  function drillMarkdown() {
+    const item = openItem();
+    const runs = drill.records.slice(0, 3);
+    if (open.kind === 'cause') return R.causeMarkdown(item, runs, { period: period(), runsURL: runsURL() });
+    if (open.kind === 'app') return appMarkdown(item, runs);
+    let md = '## Exit code ' + item.exit_code + ': ' + (item.description || '') + '\n\n- Failed runs: ' + R.num(item.count) + ' ' + period() +
+      '\n- Apps: ' + R.num(item.apps) + '\n- All runs: ' + runsURL() + '\n';
+    runs.forEach(function (r) { md += '\n' + R.runMarkdown(r, 3); });
+    return md;
+  }
+
+  function toggle(kind, value) {
+    open = isOpen(kind, value) ? null : { kind: kind, value: String(value) };
+    writeURL();
+    renderAll();
+  }
+
+  async function load() {
+    writeURL();
+    syncControls();
+    $('refreshBtn').disabled = true;
+    try {
+      await loadSlugs();
+      data = await R.getJSON('/api/errors?' + filterQuery().toString());
+      renderSummary(data.summary || {});
+      renderStuck(data.stuck || {});
+      renderChart();
+      drill.loaded = false;
+      renderAll();
+      $('errorBanner').hidden = true;
+      $('updated').textContent = 'Updated ' + new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+    } catch (e) {
+      $('errorBanner').textContent = 'Could not load the error analysis: ' + e.message;
+      $('errorBanner').hidden = false;
+    } finally {
+      $('refreshBtn').disabled = false;
+    }
+  }
+
+  async function loadSlugs() {
+    try {
+      const res = await R.getJSON('/api/repo-slugs?days=' + encodeURIComponent(state.days) + '&repo=' + encodeURIComponent(state.repo));
+      const slugs = res.repo_slugs || [];
+      $('fSlug').innerHTML = '<option value="">All repositories</option>' + slugs.map(function (s) {
+        return '<option value="' + esc(s.slug) + '">' + esc(s.slug) + ' (' + R.num(s.count) + ')</option>';
+      }).join('');
+      $('fSlug').value = slugs.some(function (s) { return s.slug === state.slug; }) ? state.slug : '';
+    } catch (e) {
+      $('fSlug').innerHTML = '<option value="">All repositories</option>';
+    }
+  }
+
+  async function exportView() {
+    const btn = $('exportBtn');
+    btn.disabled = true;
+    try {
+      const q = filterQuery();
+      q.set('examples', 'full');
+      q.set('limit', '50');
+      const res = await R.getJSON('/api/causes?' + q.toString());
+      const out = {
+        generated_at: new Date().toISOString(),
+        view: location.href,
+        filters: { days: Number(state.days), repo: state.repo, platform: state.platform || 'all', slug: state.slug, type: state.type || 'install' },
+        summary: data ? data.summary : null,
+        stuck: data ? data.stuck : null,
+        causes: res.causes || [],
+        apps: data ? data.apps : [],
+        exit_codes: data ? data.exit_code_stats : [],
+      };
+      R.download('telemetry-errors-' + state.days + 'd-' + new Date().toISOString().slice(0, 10) + '.json', JSON.stringify(out, null, 2));
+      return out;
+    } catch (e) {
+      $('errorBanner').textContent = 'Could not export: ' + e.message;
+      $('errorBanner').hidden = false;
+      return null;
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function postJSON(url, body) {
+    const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const text = await r.text();
+    let json = null;
+    try { json = JSON.parse(text); } catch (e) { /* plain text answer */ }
+    if (!r.ok) throw new Error((json && (json.error || json.message)) || text.trim() || 'The server answered ' + r.status);
+    return json || {};
+  }
+
+  function openIssue() {
+    const item = openItem();
+    const title = open.kind === 'cause' ? '[Telemetry] ' + (item.top_apps && item.top_apps.length === 1 ? item.top_apps[0] + ': ' : '') + item.message
+      : open.kind === 'app' ? '[Telemetry] ' + item.app + ': ' + (item.top_cause_message || 'failures')
+        : '[Telemetry] Exit code ' + item.exit_code + ': ' + (item.description || '');
+    $('issueTitle').value = title.slice(0, 200);
+    $('issueBody').value = drillMarkdown();
+    $('issueResult').textContent = '';
+    $('issueDialog').showModal();
+  }
+
+  let searchTimer = null;
+  function bind() {
+    document.addEventListener('click', function (e) {
+      const t = e.target;
+      if (!t || !t.closest) return;
+      const seg = t.closest('.seg[data-filter] button');
+      if (seg) {
+        const key = seg.closest('.seg').getAttribute('data-filter');
+        state[key] = seg.getAttribute('data-value');
+        if (key === 'repo') state.slug = '';
+        load();
+        return;
+      }
+      const cs = t.closest('[data-csort]');
+      if (cs) { const f = cs.getAttribute('data-csort'); state.csort = state.csort === '-' + f ? f : '-' + f; writeURL(); syncControls(); renderAll(); return; }
+      const as = t.closest('[data-asort]');
+      if (as) { const f = as.getAttribute('data-asort'); state.asort = state.asort === '-' + f ? f : '-' + f; writeURL(); syncControls(); renderAll(); return; }
+      const action = t.closest('[data-drill]');
+      if (action) {
+        const a = action.getAttribute('data-drill');
+        if (a === 'close') { open = null; writeURL(); renderAll(); }
+        if (a === 'more') { drill.page++; loadDrill(); }
+        if (a === 'markdown') R.copyText(drillMarkdown(), action);
+        if (a === 'issue') openIssue();
+        return;
+      }
+      const run = t.closest('[data-drun]');
+      if (run) { const rec = drill.records[Number(run.getAttribute('data-drun'))]; if (rec) R.openRecord(rec); return; }
+      if (t.closest('#cleanupOpen')) { $('cleanupResult').textContent = ''; $('cleanupDialog').showModal(); return; }
+      const row = t.closest('[data-open]');
+      if (row && data && !t.closest('a')) {
+        const kind = row.getAttribute('data-open');
+        const i = Number(row.getAttribute('data-idx'));
+        if (kind === 'cause') toggle('cause', data.causes[i].key);
+        if (kind === 'app') toggle('app', data.apps[i].app);
+        if (kind === 'exit') toggle('exit', data.exit_code_stats[i].exit_code);
+      }
+    });
+    $('fSlug').addEventListener('change', function () { state.slug = this.value; load(); });
+    $('fType').addEventListener('change', function () { state.type = this.value; load(); });
+    $('fSearch').addEventListener('input', function () {
+      const v = this.value;
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(function () { state.search = v; writeURL(); renderAll(); }, 200);
+    });
+    $('refreshBtn').addEventListener('click', load);
+    $('exportBtn').addEventListener('click', exportView);
+    $('cleanupForm').addEventListener('submit', async function (e) {
+      e.preventDefault();
+      $('cleanupRun').disabled = true;
+      try {
+        const res = await postJSON('/api/cleanup/run', { password: $('cleanupPassword').value });
+        $('cleanupResult').textContent = res.message || 'Cleanup finished.';
+        setTimeout(function () { $('cleanupDialog').close(); load(); }, 1500);
+      } catch (err) {
+        $('cleanupResult').textContent = 'Cleanup did not run: ' + err.message;
+      } finally {
+        $('cleanupRun').disabled = false;
+      }
+    });
+    $('issueForm').addEventListener('submit', async function (e) {
+      e.preventDefault();
+      $('issueSubmit').disabled = true;
+      try {
+        const res = await postJSON('/api/github/create-issue', {
+          password: $('issuePassword').value, title: $('issueTitle').value, body: $('issueBody').value,
+          labels: $('issueLabels').value.split(',').map(function (l) { return l.trim(); }).filter(Boolean),
+        });
+        $('issueResult').innerHTML = 'Issue created: <a href="' + esc(res.issue_url) + '" target="_blank" rel="noopener">' + esc(res.issue_url) + '</a>';
+      } catch (err) {
+        $('issueResult').textContent = 'The issue was not created: ' + err.message;
+      } finally {
+        $('issueSubmit').disabled = false;
+      }
+    });
+  }
+
+  function init() {
+    try { if (localStorage.getItem('theme') === 'light') document.documentElement.setAttribute('data-theme', 'light'); } catch (e) { /* storage unavailable */ }
+    readURL();
+    bind();
+    return load();
+  }
+
+  window.ErrorPage = {
+    init: init, state: state, exportView: exportView, drillMarkdown: drillMarkdown, toggle: toggle,
+    data: function () { return data; }, drill: function () { return drill; },
+  };
+  if (!window.__NO_AUTOSTART__) init();
+})();

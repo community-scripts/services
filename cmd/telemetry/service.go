@@ -993,9 +993,7 @@ func isAbortSignal(payloadVersion, exitCode int, errText string) bool {
 	if payloadVersion >= 3 {
 		return false
 	}
-	e := strings.ToLower(errText)
-	return containsAny(e, "sigint", "ctrl+c", "ctrl-c", "sighup",
-		"aborted by user", "user abort", "cancelled by user", "no changes have been made")
+	return containsAny(strings.ToLower(errText), abortWords...)
 }
 
 // parseRepoFilters reads repo_source (repo) and repo_slug (slug) query parameters.
@@ -1016,37 +1014,6 @@ func parsePlatform(r *http.Request) string {
 		return p
 	}
 	return ""
-}
-
-func telemetryCacheKey(prefix string, days int, repoSource, repoSlug string) string {
-	key := fmt.Sprintf("%s:%d:%s", prefix, days, repoSource)
-	if repoSlug != "" {
-		key += ":" + repoSlug
-	}
-	return key
-}
-
-// telemetryCacheKeyP extends the cache key with the platform filter.
-func telemetryCacheKeyP(prefix string, days int, repoSource, repoSlug, platform string) string {
-	key := telemetryCacheKey(prefix, days, repoSource, repoSlug)
-	if platform != "" {
-		key += ":p=" + platform
-	}
-	return key
-}
-
-// newDashCacheKey keys the consolidated page on every filter that changes it.
-//
-// ctype is appended here rather than passed through the shared helper, which
-// predates this page and knows nothing about it. Leaving it out of the key
-// would serve an lxc-filtered page to a vm request, so the omission would look
-// like wrong data rather than a stale cache.
-func newDashCacheKey(days int, repoSource, repoSlug, platform, ctype string) string {
-	key := telemetryCacheKeyP("new", days, repoSource, repoSlug, platform)
-	if ctype != "" {
-		key += ":t=" + ctype
-	}
-	return key
 }
 
 func sanitizeShort(s string, max int) string {
@@ -1645,6 +1612,7 @@ func main() {
 		RetentionDays:    envInt("RETENTION_DAYS", 365),
 	}, ch)
 	cleaner.Start()
+	ch.stuckHours = cleaner.cfg.StuckAfterHours
 
 	mux := http.NewServeMux()
 
@@ -1686,135 +1654,12 @@ func main() {
 		serveHTMLFile(w, r, "public/templates/dashboard.html")
 	})
 
-	// Consolidated dashboard, served alongside the existing three pages so it
-	// can be compared against them on live data before anything is replaced.
-	mux.HandleFunc("/new", func(w http.ResponseWriter, r *http.Request) {
-		serveHTMLFile(w, r, "public/templates/new/index.html")
-	})
-
-	// newDashTTL scales the cache lifetime with the window, on the same
-	// reasoning and the same ladder as the older dashboard endpoint: a one-day
-	// view moves quickly, a year barely moves at all.
-	//
-	// It governs the windowed sections only. The live panels are re-run on
-	// every hit no matter what this returns.
-	newDashTTL := func(days int) time.Duration {
-		switch {
-		case days <= 1:
-			return 30 * time.Second
-		case days <= 7:
-			return 2 * time.Minute
-		case days <= 30:
-			return 5 * time.Minute
-		case days <= 90:
-			return 15 * time.Minute
-		default:
-			return 30 * time.Minute
-		}
-	}
-
-	mux.HandleFunc("/api/new", func(w http.ResponseWriter, r *http.Request) {
-		days := 7
-		if d := r.URL.Query().Get("days"); d != "" {
-			fmt.Sscanf(d, "%d", &days)
-			if days < 1 {
-				days = 1
-			}
-			if days > 365 {
-				days = 365
-			}
-		}
-
-		repoSource, repoSlug := parseRepoFilters(r)
-		platform := parsePlatform(r)
-
-		// Allowlisted: the value is interpolated into SQL, and the set of script
-		// types the engine reports is small and known.
-		ctype := ""
-		switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get("ctype"))) {
-		case "lxc":
-			ctype = "lxc"
-		case "vm":
-			ctype = "vm"
-		case "addon":
-			ctype = "addon"
-		case "pve":
-			ctype = "pve"
-		}
-
-		ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
-		defer cancel()
-
-		// This was the only dashboard endpoint serving every request from
-		// scratch, and the most expensive one: thirty aggregations over as much
-		// as a year. The other three have cached for as long as they have
-		// existed, on the same stale-while-revalidate pattern used here.
-		cacheKey := newDashCacheKey(days, repoSource, repoSlug, platform, ctype)
-
-		// no-store stays on every path below. It refers to the browser, which
-		// must keep asking so the live panels stay live; the server-side cache
-		// is what stops that question being expensive.
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Cache-Control", "no-store")
-
-		// data != nil guards RefreshLive below: Get unmarshals into a pointer,
-		// so a stored "null" would hand it one to dereference. Falling through
-		// to a fresh build is the right answer for that anyway.
-		var data *NewDashData
-		if cfg.CacheEnabled && cache.Get(ctx, cacheKey, &data) && data != nil {
-			// The stored page is the windowed sections. The live panels are
-			// re-run over the top, because they answer "what is happening now"
-			// and must not come out of a cache keyed on a period they ignore.
-			ch.RefreshLive(ctx, data)
-			w.Header().Set("X-Cache", "HIT")
-
-			if cache.IsStale(ctx, cacheKey) {
-				w.Header().Set("X-Cache", "STALE")
-				if cache.TryStartRefresh(cacheKey) {
-					go func() {
-						defer cache.FinishRefresh(cacheKey)
-						refreshCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-						defer cancel()
-						fresh, err := ch.FetchNewDashboard(refreshCtx, days, repoSource, repoSlug, platform, ctype)
-						if err != nil {
-							log.Printf("[CACHE] background refresh failed for %s: %v", cacheKey, err)
-							return
-						}
-						_ = cache.Set(context.Background(), cacheKey, fresh, newDashTTL(days))
-						log.Printf("[CACHE] background refresh completed for %s", cacheKey)
-					}()
-				}
-			}
-
-			if err := json.NewEncoder(w).Encode(data); err != nil {
-				log.Printf("new dashboard encode: %v", err)
-			}
-			return
-		}
-
-		data, err := ch.FetchNewDashboard(ctx, days, repoSource, repoSlug, platform, ctype)
-		if err != nil {
-			log.Printf("new dashboard: %v", err)
-			http.Error(w, "Failed to load dashboard data", http.StatusInternalServerError)
-			return
-		}
-
-		if cfg.CacheEnabled {
-			_ = cache.Set(ctx, cacheKey, data, newDashTTL(days))
-		}
-
-		w.Header().Set("X-Cache", "MISS")
-		if err := json.NewEncoder(w).Encode(data); err != nil {
-			log.Printf("new dashboard encode: %v", err)
-		}
-	})
-
 	// Prometheus-style metrics endpoint
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 		defer cancel()
 
-		data, err := ch.FetchDashboardData(ctx, 1, "ProxmoxVE", "", "") // Last 24h, production only for metrics
+		data, err := ch.FetchDashboardData(ctx, RunFilter{Days: 1, RepoSource: "ProxmoxVE"})
 		if err != nil {
 			http.Error(w, "failed to fetch metrics", http.StatusInternalServerError)
 			return
@@ -1830,10 +1675,10 @@ func main() {
 		fmt.Fprintf(w, "# HELP telemetry_installs_failed_total Failed installations\n")
 		fmt.Fprintf(w, "# TYPE telemetry_installs_failed_total counter\n")
 		fmt.Fprintf(w, "telemetry_installs_failed_total %d\n\n", data.FailedCount)
-		fmt.Fprintf(w, "# HELP telemetry_installs_aborted_total Aborted installations (SIGINT)\n")
+		fmt.Fprintf(w, "# HELP telemetry_installs_aborted_total Aborted runs (cancelled or declined)\n")
 		fmt.Fprintf(w, "# TYPE telemetry_installs_aborted_total counter\n")
 		fmt.Fprintf(w, "telemetry_installs_aborted_total %d\n\n", data.AbortedCount)
-		fmt.Fprintf(w, "# HELP telemetry_installs_pending Current installing count\n")
+		fmt.Fprintf(w, "# HELP telemetry_installs_pending Runs still in progress\n")
 		fmt.Fprintf(w, "# TYPE telemetry_installs_pending gauge\n")
 		fmt.Fprintf(w, "telemetry_installs_pending %d\n\n", data.InstallingCount)
 		fmt.Fprintf(w, "# HELP telemetry_success_rate Success rate percentage\n")
@@ -1841,160 +1686,42 @@ func main() {
 		fmt.Fprintf(w, "telemetry_success_rate %.2f\n", data.SuccessRate)
 	})
 
-	// Dashboard API endpoint (with caching)
 	mux.HandleFunc("/api/dashboard", func(w http.ResponseWriter, r *http.Request) {
-		days := 1 // Default: Today
-		if d := r.URL.Query().Get("days"); d != "" {
-			fmt.Sscanf(d, "%d", &days)
-			if days < 0 {
-				days = 1
-			}
-			// Cap to 365 days to prevent unbounded queries that timeout
-			if days == 0 || days > 365 {
-				days = 365
-			}
-		}
-
-		// repo_source + optional repo_slug + optional platform filter
-		repoSource, repoSlug := parseRepoFilters(r)
-		platform := parsePlatform(r)
-
-		// Increase timeout for large datasets (dashboard aggregation takes time)
-		ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
-		defer cancel()
-
-		// Try cache first (stale-while-revalidate)
-		cacheKey := telemetryCacheKeyP("dashboard", days, repoSource, repoSlug, platform)
-		var data *DashboardData
-		if cfg.CacheEnabled && cache.Get(ctx, cacheKey, &data) {
-			// Serve cached data immediately
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("X-Cache", "HIT")
-
-			// If stale, trigger background refresh (non-blocking)
-			if cache.IsStale(ctx, cacheKey) {
-				w.Header().Set("X-Cache", "STALE")
-				if cache.TryStartRefresh(cacheKey) {
-					go func() {
-						defer cache.FinishRefresh(cacheKey)
-						refreshCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-						defer cancel()
-						freshData, err := ch.FetchDashboardData(refreshCtx, days, repoSource, repoSlug, platform)
-						if err != nil {
-							log.Printf("[CACHE] background refresh failed for %s: %v", cacheKey, err)
-							return
-						}
-						_ = cache.Set(context.Background(), cacheKey, freshData, cfg.CacheTTL)
-						log.Printf("[CACHE] background refresh completed for %s", cacheKey)
-					}()
-				}
-			}
-
-			json.NewEncoder(w).Encode(data)
-			return
-		}
-
-		data, err := ch.FetchDashboardData(ctx, days, repoSource, repoSlug, platform)
+		f, err := parseRunFilter(r.URL.Query(), 1, 365, "")
 		if err != nil {
-			log.Printf("dashboard fetch failed: %v", err)
-			http.Error(w, "failed to fetch data", http.StatusInternalServerError)
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-
-		// Cache the result with dynamic TTL based on period
-		if cfg.CacheEnabled {
-			// Short periods change faster â†’ shorter cache TTL
-			cacheTTL := cfg.CacheTTL
-			switch {
-			case days <= 1:
-				cacheTTL = 30 * time.Second // Today: 30s cache
-			case days <= 7:
-				cacheTTL = 2 * time.Minute // 7 Days: 2min cache
-			case days <= 30:
-				cacheTTL = 5 * time.Minute // 30 Days: 5min cache
-			case days <= 90:
-				cacheTTL = 15 * time.Minute // 90 Days: 15min cache
-			default:
-				cacheTTL = 30 * time.Minute // 1 Year+: 30min cache
-			}
-			_ = cache.Set(ctx, cacheKey, data, cacheTTL)
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("X-Cache", "MISS")
-		json.NewEncoder(w).Encode(data)
+		serveCachedJSON(w, r, cache, cfg.CacheEnabled, f.cacheKey("dashboard"), dashboardTTL(f.Days), 120*time.Second,
+			func(ctx context.Context) (*DashboardData, error) { return ch.FetchDashboardPage(ctx, f) })
 	})
 
-	// Paginated records API
 	mux.HandleFunc("/api/records", func(w http.ResponseWriter, r *http.Request) {
-		page := 1
-		limit := 50
-		status := r.URL.Query().Get("status")
-		app := r.URL.Query().Get("app")
-		if s := r.URL.Query().Get("search"); s != "" && app == "" {
-			app = s
-		}
-		osType := r.URL.Query().Get("os")
-		typeFilter := r.URL.Query().Get("type")
-		sort := r.URL.Query().Get("sort")
-		repoSource, repoSlug := parseRepoFilters(r)
-		platform := parsePlatform(r)
-
-		// Days filter for Installation Log (default: 1 = today)
-		days := 1
-		if d := r.URL.Query().Get("days"); d != "" {
-			fmt.Sscanf(d, "%d", &days)
-			if days < 0 {
-				days = 1
-			}
-			if days == 0 || days > 365 {
-				days = 365
-			}
-		}
-
-		if p := r.URL.Query().Get("page"); p != "" {
-			fmt.Sscanf(p, "%d", &page)
-			if page < 1 {
-				page = 1
-			}
-		}
-		if l := r.URL.Query().Get("limit"); l != "" {
-			fmt.Sscanf(l, "%d", &limit)
-			if limit < 1 {
-				limit = 1
-			}
-			if limit > 100 {
-				limit = 100
-			}
-		}
-
-		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-		defer cancel()
-
-		records, total, err := ch.FetchRecordsPaginated(ctx, page, limit, status, app, osType, typeFilter, sort, repoSource, repoSlug, platform, days)
+		q := r.URL.Query()
+		f, err := parseRunFilter(q, 1, 365, "all")
 		if err != nil {
-			log.Printf("records fetch failed: %v", err)
-			http.Error(w, "failed to fetch records", http.StatusInternalServerError)
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		page := parseLimit(q.Get("page"), 1, 1_000_000)
+		limit := parseLimit(q.Get("limit"), 50, 100)
 
-		// Auto-reclassify old records that have status=failed but are actually user aborts
-		for i := range records {
-			if records[i].Status == "failed" && isAbortSignal(records[i].PayloadVersion, records[i].ExitCode, records[i].Error) {
-				records[i].Status = "aborted"
-			}
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		records, total, err := ch.FetchRuns(ctx, f, page, limit, q.Get("sort"))
+		if err != nil {
+			log.Printf("records fetch failed: %v", err)
+			http.Error(w, "could not query the telemetry database; try again in a minute", http.StatusInternalServerError)
+			return
 		}
-
-		response := map[string]interface{}{
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"records":     records,
 			"page":        page,
 			"limit":       limit,
 			"total":       total,
 			"total_pages": (total + limit - 1) / limit,
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
+		})
 	})
 
 	// Alert history and test endpoints
@@ -2152,88 +1879,64 @@ func main() {
 		json.NewEncoder(w).Encode(data)
 	})
 
-	// Error Analysis API - detailed error data
+	errorsTimeout := func(days int) time.Duration {
+		switch {
+		case days >= 365:
+			return 600 * time.Second
+		case days >= 90:
+			return 300 * time.Second
+		}
+		return 120 * time.Second
+	}
+
 	mux.HandleFunc("/api/errors", func(w http.ResponseWriter, r *http.Request) {
-		days := 7
-		if d := r.URL.Query().Get("days"); d != "" {
-			fmt.Sscanf(d, "%d", &days)
-			if days < 1 {
-				days = 1
-			}
-			if days > 365 {
-				days = 365
-			}
-		}
-
-		repoSource, repoSlug := parseRepoFilters(r)
-		platform := parsePlatform(r)
-
-		// Scale timeout by data volume
-		timeout := 120 * time.Second
-		if days >= 90 {
-			timeout = 300 * time.Second
-		}
-		if days >= 365 {
-			timeout = 600 * time.Second
-		}
-
-		ctx, cancel := context.WithTimeout(r.Context(), timeout)
-		defer cancel()
-
-		cacheKey := telemetryCacheKeyP("errors", days, repoSource, repoSlug, platform)
-		var data *ErrorAnalysisData
-		if cfg.CacheEnabled && cache.Get(ctx, cacheKey, &data) {
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("X-Cache", "HIT")
-			if cache.IsStale(ctx, cacheKey) {
-				w.Header().Set("X-Cache", "STALE")
-				if cache.TryStartRefresh(cacheKey) {
-					go func() {
-						defer cache.FinishRefresh(cacheKey)
-						refreshTimeout := 120 * time.Second
-						if days >= 90 {
-							refreshTimeout = 300 * time.Second
-						}
-						if days >= 365 {
-							refreshTimeout = 600 * time.Second
-						}
-						refreshCtx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
-						defer cancel()
-						freshData, err := ch.FetchErrorAnalysisData(refreshCtx, days, repoSource, repoSlug, platform)
-						if err != nil {
-							log.Printf("[CACHE] background refresh failed for %s: %v", cacheKey, err)
-							return
-						}
-						refreshTTL := 2 * time.Minute
-						if days > 7 {
-							refreshTTL = 23 * time.Hour
-						}
-						_ = cache.Set(context.Background(), cacheKey, freshData, refreshTTL)
-					}()
-				}
-			}
-			json.NewEncoder(w).Encode(data)
-			return
-		}
-
-		data, err := ch.FetchErrorAnalysisData(ctx, days, repoSource, repoSlug, platform)
+		f, err := parseRunFilter(r.URL.Query(), 7, 365, "")
 		if err != nil {
-			log.Printf("error analysis fetch failed: %v", err)
-			http.Error(w, "failed to fetch error data", http.StatusInternalServerError)
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		serveCachedJSON(w, r, cache, cfg.CacheEnabled, f.cacheKey("errors"), errorsTTL(f.Days), errorsTimeout(f.Days),
+			func(ctx context.Context) (*ErrorAnalysisData, error) { return ch.FetchErrorAnalysisData(ctx, f) })
+	})
 
-		if cfg.CacheEnabled {
-			cacheTTL := 2 * time.Minute
-			if days > 7 {
-				cacheTTL = 23 * time.Hour
-			}
-			_ = cache.Set(ctx, cacheKey, data, cacheTTL)
+	mux.HandleFunc("/api/causes", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		f, err := parseRunFilter(q, 7, 365, "")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
 		}
+		limit := parseLimit(q.Get("limit"), 50, 200)
+		full := q.Get("examples") == "full"
+		key := fmt.Sprintf("%s&limit=%d&full=%t", f.cacheKey("causes"), limit, full)
+		serveCachedJSON(w, r, cache, cfg.CacheEnabled, key, errorsTTL(f.Days), errorsTimeout(f.Days),
+			func(ctx context.Context) (*CausesResponse, error) {
+				causes, err := ch.FetchCauses(ctx, f, limit, full)
+				if err != nil {
+					return nil, err
+				}
+				return &CausesResponse{Days: f.Days, Causes: causes, Updated: time.Now().UTC().Format(time.RFC3339)}, nil
+			})
+	})
 
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("X-Cache", "MISS")
-		json.NewEncoder(w).Encode(data)
+	mux.HandleFunc("/api/app-errors", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		f, err := parseRunFilter(q, 7, 365, "")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		limit := parseLimit(q.Get("limit"), 100, 500)
+		key := fmt.Sprintf("%s&limit=%d", f.cacheKey("apperrors"), limit)
+		serveCachedJSON(w, r, cache, cfg.CacheEnabled, key, errorsTTL(f.Days), errorsTimeout(f.Days),
+			func(ctx context.Context) (*AppErrorsResponse, error) {
+				apps, err := ch.FetchAppStats(ctx, f, true, limit)
+				if err != nil {
+					return nil, err
+				}
+				return &AppErrorsResponse{Days: f.Days, MinRuns: minRunsForRate(f.Days), Apps: apps,
+					Updated: time.Now().UTC().Format(time.RFC3339)}, nil
+			})
 	})
 
 	// Repository slug list for fork-specific filtering (owner/repo)
@@ -2316,8 +2019,16 @@ func main() {
 			orphans = -1
 		}
 
+		runs, runsErr := ch.FetchStuckRuns(ctx, RunFilter{Type: "all"}, cleaner.cfg.StuckAfterHours)
+		if runsErr != nil {
+			log.Printf("WARN: cleanup/status - stuck runs failed: %v", runsErr)
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
+			"running":            runs.Running,
+			"stalled":            runs.Stalled,
+			"no_result_24h":      runs.NoResult,
 			"stuck_count":        count,
 			"stuck_after_hours":  cleaner.cfg.StuckAfterHours,
 			"check_interval":     cleaner.cfg.CheckInterval.String(),
@@ -2847,7 +2558,7 @@ func warmupCaches(ch *CHClient, cache *Cache, cfg Config, todayOnly bool) {
 		}{
 			{7}, {30}, {0},
 		} {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 			data, err := ch.FetchScriptStats(ctx, spec.days, "", "", nil)
 			cancel()
 			if err != nil {
@@ -2875,12 +2586,12 @@ func warmupCaches(ch *CHClient, cache *Cache, cfg Config, todayOnly bool) {
 		}
 
 		for _, repo := range repos {
-			// --- Dashboard ---
+			f := RunFilter{Days: days, RepoSource: repo}
 			{
-				cacheKey := fmt.Sprintf("dashboard:%d:%s", days, repo)
+				cacheKey := f.cacheKey("dashboard")
 				if cache.TryStartRefresh(cacheKey) {
 					ctx, cancel := context.WithTimeout(context.Background(), timeout)
-					data, err := ch.FetchDashboardData(ctx, days, repo, "", "")
+					data, err := ch.FetchDashboardPage(ctx, f)
 					cancel()
 					cache.FinishRefresh(cacheKey)
 					if err != nil {
@@ -2894,7 +2605,6 @@ func warmupCaches(ch *CHClient, cache *Cache, cfg Config, todayOnly bool) {
 				time.Sleep(1 * time.Second)
 			}
 
-			// --- Scripts (only for today — PB SQL collections handle 7d/30d/alltime) ---
 			if days == 1 {
 				cacheKey := fmt.Sprintf("scripts:%d:%s", days, repo)
 				if cache.TryStartRefresh(cacheKey) {
@@ -2913,12 +2623,11 @@ func warmupCaches(ch *CHClient, cache *Cache, cfg Config, todayOnly bool) {
 				time.Sleep(1 * time.Second)
 			}
 
-			// --- Errors (skip for today-only refresh — errors don't change that fast) ---
 			if !todayOnly {
-				cacheKey := fmt.Sprintf("errors:%d:%s", days, repo)
+				cacheKey := f.cacheKey("errors")
 				if cache.TryStartRefresh(cacheKey) {
 					ctx, cancel := context.WithTimeout(context.Background(), timeout)
-					data, err := ch.FetchErrorAnalysisData(ctx, days, repo, "", "")
+					data, err := ch.FetchErrorAnalysisData(ctx, f)
 					cancel()
 					cache.FinishRefresh(cacheKey)
 					if err != nil {
@@ -2955,12 +2664,12 @@ func warmupHeavyDashboard(ch *CHClient, cache *Cache, cfg Config) {
 		cacheTTL := 23 * time.Hour
 
 		for _, repo := range repos {
-			// --- Dashboard ---
-			cacheKey := fmt.Sprintf("dashboard:%d:%s", days, repo)
+			f := RunFilter{Days: days, RepoSource: repo}
+			cacheKey := f.cacheKey("dashboard")
 			func() {
 				ctx, cancel := context.WithTimeout(context.Background(), timeout)
 				defer cancel()
-				data, err := ch.FetchDashboardData(ctx, days, repo, "", "")
+				data, err := ch.FetchDashboardPage(ctx, f)
 				if err != nil {
 					log.Printf("[CACHE] Heavy warmup dashboard:%d failed: %v", days, err)
 					failed++
@@ -2973,12 +2682,11 @@ func warmupHeavyDashboard(ch *CHClient, cache *Cache, cfg Config) {
 
 			time.Sleep(5 * time.Second)
 
-			// --- Errors ---
-			cacheKey = fmt.Sprintf("errors:%d:%s", days, repo)
+			cacheKey = f.cacheKey("errors")
 			func() {
 				ctx, cancel := context.WithTimeout(context.Background(), timeout)
 				defer cancel()
-				data, err := ch.FetchErrorAnalysisData(ctx, days, repo, "", "")
+				data, err := ch.FetchErrorAnalysisData(ctx, f)
 				if err != nil {
 					log.Printf("[CACHE] Heavy warmup errors:%d failed: %v", days, err)
 					failed++

@@ -44,10 +44,47 @@ function updateStats(data) {
   document.getElementById('avgInstalls').textContent = avg;
 }
 
+// Failure rate is failed / (success + failed); the last failure shows its message.
+function scriptRow(s, rank) {
+  const typeClass = (s.type || '').toLowerCase();
+  const finished = s.success + s.failed;
+  const rate = s.failure_rate || 0;
+  const rateColor = rate >= 30 ? 'var(--accent-red)' : rate >= 10 ? 'var(--accent-yellow)' : 'var(--accent-green)';
+  const total = s.success + s.failed + s.aborted + s.installing;
+  const pctSuccess = total > 0 ? (s.success / total * 100) : 0;
+  const pctFailed = total > 0 ? (s.failed / total * 100) : 0;
+  const pctAborted = total > 0 ? (s.aborted / total * 100) : 0;
+  const pctInstalling = total > 0 ? (s.installing / total * 100) : 0;
+  const ipd = (s.installs_per_day || 0).toFixed(2);
+  const ipdColor = s.installs_per_day >= 10 ? 'var(--accent-green)' : s.installs_per_day >= 1 ? 'var(--accent-cyan)' : 'var(--text-muted)';
+  const cause = s.last_failure_cause
+    ? '<a href="/error-analysis?app=' + encodeURIComponent(s.app) + '" onclick="event.stopPropagation()" title="' + escapeHtml(s.last_failure_cause) + '">' + escapeHtml(s.last_failure_cause) + '</a>'
+    : '<span style="color:var(--text-muted);">none</span>';
+  return '<tr' + scriptRowAttrs(s.app) + '>' +
+    '<td style="color:var(--text-muted);font-weight:600;">' + rank + '</td>' +
+    '<td><strong>' + escapeHtml(s.app) + '</strong></td>' +
+    '<td><span class="type-badge ' + typeClass + '">' + (s.type || '-').toUpperCase() + '</span></td>' +
+    '<td style="font-weight:600;">' + s.total.toLocaleString() + '</td>' +
+    '<td style="color:var(--accent-green);">' + s.success.toLocaleString() + '</td>' +
+    '<td style="color:var(--accent-red);">' + s.failed.toLocaleString() + '</td>' +
+    '<td style="color:var(--accent-purple);">' + s.aborted.toLocaleString() + '</td>' +
+    '<td style="color:var(--accent-yellow);">' + s.installing.toLocaleString() + '</td>' +
+    '<td style="color:' + rateColor + ';font-weight:600;">' + (finished ? rate.toFixed(1) + '%' : '<span style="color:var(--text-muted);font-weight:400;">none finished</span>') + '</td>' +
+    '<td class="last-cause">' + cause + '</td>' +
+    '<td style="color:' + ipdColor + ';font-weight:600;">' + ipd + '</td>' +
+    '<td><div class="success-bar">' +
+    '<div class="seg-success" style="width:' + pctSuccess + '%"></div>' +
+    '<div class="seg-failed" style="width:' + pctFailed + '%"></div>' +
+    '<div class="seg-aborted" style="width:' + pctAborted + '%"></div>' +
+    '<div class="seg-installing" style="width:' + pctInstalling + '%"></div>' +
+    '</div></td>' +
+    '</tr>';
+}
+
 function renderTopTable() {
   const tbody = document.getElementById('topTableBody');
   if (!currentData || !currentData.top_scripts) {
-    tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--text-muted);padding:24px;">No data</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="12" style="text-align:center;color:var(--text-muted);padding:24px;">No data</td></tr>';
     return;
   }
   const search = (document.getElementById('searchTop').value || '').toLowerCase();
@@ -58,35 +95,7 @@ function renderTopTable() {
   const limit = expandTop ? scripts.length : Math.min(LIMIT, scripts.length);
   const shown = scripts.slice(0, limit);
 
-  tbody.innerHTML = shown.map((s, idx) => {
-    const typeClass = (s.type || '').toLowerCase();
-    const rateColor = s.success_rate >= 90 ? 'var(--accent-green)' : s.success_rate >= 70 ? 'var(--accent-yellow)' : 'var(--accent-red)';
-    const total = s.success + s.failed + s.aborted + s.installing;
-    const pctSuccess = total > 0 ? (s.success / total * 100) : 0;
-    const pctFailed = total > 0 ? (s.failed / total * 100) : 0;
-    const pctAborted = total > 0 ? (s.aborted / total * 100) : 0;
-    const pctInstalling = total > 0 ? (s.installing / total * 100) : 0;
-    const ipd = (s.installs_per_day || 0).toFixed(2);
-    const ipdColor = s.installs_per_day >= 10 ? 'var(--accent-green)' : s.installs_per_day >= 1 ? 'var(--accent-cyan)' : 'var(--text-muted)';
-    return '<tr' + scriptRowAttrs(s.app) + '>' +
-      '<td style="color:var(--text-muted);font-weight:600;">' + (idx + 1) + '</td>' +
-      '<td><strong>' + escapeHtml(s.app) + '</strong></td>' +
-      '<td><span class="type-badge ' + typeClass + '">' + (s.type || '-').toUpperCase() + '</span></td>' +
-      '<td style="font-weight:600;">' + s.total.toLocaleString() + '</td>' +
-      '<td style="color:var(--accent-green);">' + s.success.toLocaleString() + '</td>' +
-      '<td style="color:var(--accent-red);">' + s.failed.toLocaleString() + '</td>' +
-      '<td style="color:var(--accent-purple);">' + s.aborted.toLocaleString() + '</td>' +
-      '<td style="color:var(--accent-yellow);">' + s.installing.toLocaleString() + '</td>' +
-      '<td style="color:' + rateColor + ';font-weight:600;">' + s.success_rate.toFixed(1) + '%</td>' +
-      '<td style="color:' + ipdColor + ';font-weight:600;">' + ipd + '</td>' +
-      '<td><div class="success-bar">' +
-      '<div class="seg-success" style="width:' + pctSuccess + '%"></div>' +
-      '<div class="seg-failed" style="width:' + pctFailed + '%"></div>' +
-      '<div class="seg-aborted" style="width:' + pctAborted + '%"></div>' +
-      '<div class="seg-installing" style="width:' + pctInstalling + '%"></div>' +
-      '</div></td>' +
-      '</tr>';
-  }).join('');
+  tbody.innerHTML = shown.map((s, idx) => scriptRow(s, idx + 1)).join('');
 
   document.getElementById('expandTopBtn').textContent = expandTop ? 'Show Top 10' : 'Show All (' + scripts.length + ')';
 }
@@ -94,7 +103,7 @@ function renderTopTable() {
 function renderBottomTable() {
   const tbody = document.getElementById('bottomTableBody');
   if (!currentData || !currentData.top_scripts) {
-    tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--text-muted);padding:24px;">No data</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="12" style="text-align:center;color:var(--text-muted);padding:24px;">No data</td></tr>';
     return;
   }
   const search = (document.getElementById('searchBottom').value || '').toLowerCase();
@@ -107,35 +116,7 @@ function renderBottomTable() {
   const shown = scripts.slice(0, limit);
   const totalScripts = currentData.top_scripts.length;
 
-  tbody.innerHTML = shown.map((s, idx) => {
-    const typeClass = (s.type || '').toLowerCase();
-    const rateColor = s.success_rate >= 90 ? 'var(--accent-green)' : s.success_rate >= 70 ? 'var(--accent-yellow)' : 'var(--accent-red)';
-    const total = s.success + s.failed + s.aborted + s.installing;
-    const pctSuccess = total > 0 ? (s.success / total * 100) : 0;
-    const pctFailed = total > 0 ? (s.failed / total * 100) : 0;
-    const pctAborted = total > 0 ? (s.aborted / total * 100) : 0;
-    const pctInstalling = total > 0 ? (s.installing / total * 100) : 0;
-    const ipd = (s.installs_per_day || 0).toFixed(2);
-    const ipdColor = s.installs_per_day >= 10 ? 'var(--accent-green)' : s.installs_per_day >= 1 ? 'var(--accent-cyan)' : 'var(--text-muted)';
-    return '<tr' + scriptRowAttrs(s.app) + '>' +
-      '<td style="color:var(--text-muted);font-weight:600;">' + (totalScripts - idx) + '</td>' +
-      '<td><strong>' + escapeHtml(s.app) + '</strong></td>' +
-      '<td><span class="type-badge ' + typeClass + '">' + (s.type || '-').toUpperCase() + '</span></td>' +
-      '<td style="font-weight:600;">' + s.total.toLocaleString() + '</td>' +
-      '<td style="color:var(--accent-green);">' + s.success.toLocaleString() + '</td>' +
-      '<td style="color:var(--accent-red);">' + s.failed.toLocaleString() + '</td>' +
-      '<td style="color:var(--accent-purple);">' + s.aborted.toLocaleString() + '</td>' +
-      '<td style="color:var(--accent-yellow);">' + s.installing.toLocaleString() + '</td>' +
-      '<td style="color:' + rateColor + ';font-weight:600;">' + s.success_rate.toFixed(1) + '%</td>' +
-      '<td style="color:' + ipdColor + ';font-weight:600;">' + ipd + '</td>' +
-      '<td><div class="success-bar">' +
-      '<div class="seg-success" style="width:' + pctSuccess + '%"></div>' +
-      '<div class="seg-failed" style="width:' + pctFailed + '%"></div>' +
-      '<div class="seg-aborted" style="width:' + pctAborted + '%"></div>' +
-      '<div class="seg-installing" style="width:' + pctInstalling + '%"></div>' +
-      '</div></td>' +
-      '</tr>';
-  }).join('');
+  tbody.innerHTML = shown.map((s, idx) => scriptRow(s, totalScripts - idx)).join('');
 
   document.getElementById('expandBottomBtn').textContent = expandBottom ? 'Show Bottom 10' : 'Show All (' + scripts.length + ')';
 }

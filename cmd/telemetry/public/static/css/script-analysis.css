@@ -383,8 +383,6 @@ body {
 .stat-card .label {
   font-size: 12px;
   color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
   margin-bottom: 8px;
 }
 
@@ -422,9 +420,7 @@ th {
   border-bottom: 2px solid var(--border-color);
   color: var(--text-muted);
   font-weight: 600;
-  text-transform: uppercase;
   font-size: 11px;
-  letter-spacing: 0.5px;
   position: sticky;
   top: 0;
   background: var(--bg-card);
@@ -593,4 +589,16 @@ tr:hover {
 
 .section-card {
   animation: fadeIn 0.3s ease;
+}
+
+.last-cause {
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.last-cause a {
+  color: var(--text-secondary);
 }

@@ -6,7 +6,7 @@
     <title>Script Analysis - Proxmox VE Helper-Scripts</title>
     <link rel="icon" type="image/svg+xml" href="/static/img/logo.svg?v=cs-amber">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <link rel="stylesheet" href="/static/css/script-analysis.css?v=3">
+    <link rel="stylesheet" href="/static/css/script-analysis.css?v=4">
 </head>
 <body>
     <nav class="navbar">
@@ -60,7 +60,7 @@
         <!-- Stats -->
         <div class="stats-grid">
             <div class="stat-card">
-                <div class="label">Total Installs</div>
+                <div class="label">Runs</div>
                 <div class="value" id="totalInstalls" style="color:var(--accent-cyan);">-</div>
             </div>
             <div class="stat-card">
@@ -68,7 +68,7 @@
                 <div class="value" id="uniqueScripts" style="color:var(--accent-blue);">-</div>
             </div>
             <div class="stat-card">
-                <div class="label">Avg Installs / Script</div>
+                <div class="label">Average runs per script</div>
                 <div class="value" id="avgInstalls" style="color:var(--accent-green);">-</div>
             </div>
         </div>
@@ -89,13 +89,14 @@
                             <th>#</th>
                             <th>Script</th>
                             <th>Type</th>
-                            <th>Total</th>
+                            <th>Runs</th>
                             <th>Success</th>
                             <th>Failed</th>
                             <th>Aborted</th>
-                            <th>Installing</th>
-                            <th>Success Rate</th>
-                            <th>Installs/Day</th>
+                            <th>In progress</th>
+                            <th title="Failed runs divided by finished (successful or failed) runs">Failure rate</th>
+                            <th>Last failure</th>
+                            <th>Runs per day</th>
                             <th style="min-width:100px;">Distribution</th>
                         </tr>
                     </thead>
@@ -120,13 +121,14 @@
                             <th>#</th>
                             <th>Script</th>
                             <th>Type</th>
-                            <th>Total</th>
+                            <th>Runs</th>
                             <th>Success</th>
                             <th>Failed</th>
                             <th>Aborted</th>
-                            <th>Installing</th>
-                            <th>Success Rate</th>
-                            <th>Installs/Day</th>
+                            <th>In progress</th>
+                            <th title="Failed runs divided by finished (successful or failed) runs">Failure rate</th>
+                            <th>Last failure</th>
+                            <th>Runs per day</th>
                             <th style="min-width:100px;">Distribution</th>
                         </tr>
                     </thead>
@@ -178,6 +180,6 @@
         </div>
     </div>
 
-    <script src="/static/js/script-analysis.js?v=4"></script>
+    <script src="/static/js/script-analysis.js?v=5"></script>
 </body>
 </html>

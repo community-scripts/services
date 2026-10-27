@@ -1,1254 +1,364 @@
-let charts = {};
-let allRecords = [];
-let allAppsData = [];
-let showingAllApps = false;
-let currentPage = 1;
-let totalPages = 1;
-let perPage = 25;
-let currentTheme = localStorage.getItem('theme') || 'dark';
-let currentSort = { field: 'created', dir: 'desc' };
-
-function getActiveFilters() {
-  const days = document.querySelector('.filter-btn.active')?.dataset.days || '1';
-  // Default: ALL sources, today
-  const repo = document.querySelector('.source-btn.active')?.dataset.repo || 'all';
-  const platform = document.querySelector('.platform-btn.active')?.dataset.platform || '';
-  const slug = document.getElementById('filterSlug')?.value || '';
-  return { days, repo, platform, slug };
-}
-
-// platformBadge renders a small pve/incus badge (empty string when unknown)
-function platformBadge(p) {
-  if (p === 'incus') return '<span class="platform-badge incus" title="Incus host">INCUS</span>';
-  if (p === 'pve') return '<span class="platform-badge pve" title="Proxmox VE host">PVE</span>';
-  return '<span class="platform-badge unknown">—</span>';
-}
-
-function escapeAttr(str) {
-  if (!str) return '';
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
-
-async function loadRepoSlugOptions() {
-  const select = document.getElementById('filterSlug');
-  if (!select) return;
-  const { days, repo, slug } = getActiveFilters();
-  try {
-    const resp = await fetch('/api/repo-slugs?days=' + days + '&repo=' + encodeURIComponent(repo));
-    if (!resp.ok) return;
-    const data = await resp.json();
-    const slugs = data.repo_slugs || [];
-    const prev = slug;
-    select.innerHTML = '<option value="">All repositories</option>' +
-      slugs.map(s => '<option value="' + escapeAttr(s.slug) + '">' + escapeHtml(s.slug) + ' (' + s.count.toLocaleString() + ')</option>').join('');
-    if (prev && slugs.some(s => s.slug === prev)) {
-      select.value = prev;
-    }
-  } catch (e) {
-    console.log('Could not load repo slugs');
-  }
-}
-
-function onSlugFilterChange() {
-  refreshData();
-}
-
-function selectRepoSlug(slug) {
-  const select = document.getElementById('filterSlug');
-  if (select) {
-    select.value = slug;
-    refreshData();
-  }
-}
-
-function updateRepoSlugs(slugs) {
-  const section = document.getElementById('repoSlugsSection');
-  const list = document.getElementById('repoSlugsList');
-  if (!section || !list) return;
-  const activeSlug = document.getElementById('filterSlug')?.value || '';
-  if (!slugs || slugs.length <= 1 || activeSlug) {
-    section.style.display = 'none';
-    return;
-  }
-  section.style.display = 'block';
-  list.innerHTML = slugs.map(s =>
-    '<button type="button" class="repo-slug-chip" onclick="selectRepoSlug(\'' + escapeAttr(s.slug) + '\')">' +
-    escapeHtml(s.slug) + ' <span class="count">' + s.count.toLocaleString() + '</span></button>'
-  ).join('');
-}
-
-// Auto-refresh state
-let autoRefreshEnabled = localStorage.getItem('autoRefresh') === 'true';
-let autoRefreshInterval = 15000; // 15 seconds
-let autoRefreshTimer = null;
-
-// Colorful palette for Top Applications chart
-const appBarColors = [
-  '#3b82f6', '#f97316', '#22c55e', '#a855f7', '#ef4444',
-  '#22d3ee', '#eab308', '#ec4899', '#84cc16', '#6366f1',
-  '#14b8a6', '#f43f5e', '#8b5cf6', '#10b981', '#06b6d4',
-  '#d946ef', '#facc15', '#2dd4bf'
-];
-
-// Apply saved theme on load
-if (currentTheme === 'light') {
-  document.documentElement.setAttribute('data-theme', 'light');
-  document.getElementById('themeIcon').textContent = '☀️';
-}
-
-// Fetch GitHub stars
-async function fetchGitHubStars() {
-  try {
-    const resp = await fetch('https://api.github.com/repos/community-scripts/ProxmoxVE');
-    const data = await resp.json();
-    if (data.stargazers_count) {
-      document.getElementById('starCount').textContent = data.stargazers_count.toLocaleString();
-    }
-  } catch (e) {
-    console.log('Could not fetch GitHub stars');
-  }
-}
-fetchGitHubStars();
-
-function toggleTheme() {
-  if (currentTheme === 'dark') {
-    document.documentElement.setAttribute('data-theme', 'light');
-    document.getElementById('themeIcon').textContent = '☀️';
-    currentTheme = 'light';
-  } else {
-    document.documentElement.removeAttribute('data-theme');
-    document.getElementById('themeIcon').textContent = '🌙';
-    currentTheme = 'dark';
-  }
-  localStorage.setItem('theme', currentTheme);
-  if (Object.keys(charts).length > 0) {
-    refreshData();
-  }
-}
-
-function handleGlobalSearch(event) {
-  if (event.key === 'Enter') {
-    const query = event.target.value.trim();
-    if (query) {
-      document.getElementById('filterApp').value = query;
-      filterTable();
-      document.querySelector('.section-card:last-of-type').scrollIntoView({ behavior: 'smooth' });
-    }
-  }
-}
-
-// Keyboard shortcut for search
-document.addEventListener('keydown', function(e) {
-  if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
-    e.preventDefault();
-    document.getElementById('globalSearch').focus();
-  }
-});
-
-const chartDefaults = {
-  responsive: true,
-  maintainAspectRatio: false,
-  plugins: {
-    legend: {
-      labels: { color: '#8b949e' }
-    }
-  },
-  scales: {
-    x: {
-      ticks: { color: '#8b949e' },
-      grid: { color: '#2d3748' }
-    },
-    y: {
-      ticks: { color: '#8b949e' },
-      grid: { color: '#2d3748' }
-    }
-  }
-};
-
-async function fetchData() {
-  const { days, repo, platform, slug } = getActiveFilters();
-
-  // Show loading indicator
-  document.getElementById('loadingIndicator').style.display = 'flex';
-  document.getElementById('cacheStatus').textContent = '';
-
-  try {
-    // Add cache-busting timestamp for filter changes to ensure fresh data
-    const cacheBuster = '&_t=' + Date.now();
-    let url = '/api/dashboard?days=' + days + '&repo=' + repo + cacheBuster;
-    if (platform) url += '&platform=' + encodeURIComponent(platform);
-    if (slug) url += '&slug=' + encodeURIComponent(slug);
-    const response = await fetch(url);
-    if (!response.ok) throw new Error('Failed to fetch data');
-
-    // Check cache status from header
-    const cacheHit = response.headers.get('X-Cache') === 'HIT';
-    document.getElementById('cacheStatus').textContent = cacheHit ? '(cached)' : '(fresh)';
-
-    return await response.json();
-  } catch (error) {
-    document.getElementById('error').style.display = 'flex';
-    document.getElementById('errorText').textContent = error.message;
-    throw error;
-  } finally {
-    document.getElementById('loadingIndicator').style.display = 'none';
-  }
-}
-
-function updateStats(data) {
-  // Show time-filtered total as main number, all-time as subtitle
-  document.getElementById('totalInstalls').textContent = (data.total_installs || 0).toLocaleString();
-  
-  // Show all-time total in subtitle if different from filtered total
-  const allTime = data.total_all_time || data.total_installs || 0;
-  const subtitle = document.getElementById('totalSubtitle');
-  if (subtitle) {
-    subtitle.textContent = allTime !== data.total_installs 
-      ? allTime.toLocaleString() + ' all time' 
-      : '';
-  }
-
-  // Failed count (separate card)
-  document.getElementById('failedCount').textContent = (data.failed_count || 0).toLocaleString();
-  document.getElementById('failedSubtitle').textContent = data.failed_count > 0 ? 'installation failures' : 'no failures';
-
-  // Aborted count (separate card)
-  document.getElementById('abortedCount').textContent = (data.aborted_count || 0).toLocaleString();
-
-  document.getElementById('successRate').textContent = data.success_rate.toFixed(1) + '%';
-  document.getElementById('successSubtitle').textContent = data.success_count.toLocaleString() + ' successful installations';
-  document.getElementById('lastUpdated').textContent = 'Updated ' + new Date().toLocaleTimeString();
-  document.getElementById('error').style.display = 'none';
-
-  // Most Popular - update podium
-  function formatCompact(n) {
-    if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
-    if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
-    return n.toString();
-  }
-  if (data.top_apps && data.top_apps.length >= 3) {
-    document.getElementById('podium1App').textContent = data.top_apps[0].app;
-    document.getElementById('podium1Count').textContent = formatCompact(data.top_apps[0].count);
-    document.getElementById('podium2App').textContent = data.top_apps[1].app;
-    document.getElementById('podium2Count').textContent = formatCompact(data.top_apps[1].count);
-    document.getElementById('podium3App').textContent = data.top_apps[2].app;
-    document.getElementById('podium3Count').textContent = formatCompact(data.top_apps[2].count);
-  } else if (data.top_apps && data.top_apps.length > 0) {
-    document.getElementById('podium1App').textContent = data.top_apps[0].app;
-    document.getElementById('podium1Count').textContent = formatCompact(data.top_apps[0].count);
-  }
-
-  // Store all apps data for View All feature
-  allAppsData = data.top_apps || [];
-
-  // Error Analysis
-  updateErrorAnalysis(data.error_analysis || []);
-
-  // Failed Apps
-  updateFailedApps(data.failed_apps || []);
-
-  // Repository fork breakdown
-  updateRepoSlugs(data.repo_slugs || []);
-}
-
-function updateErrorAnalysis(errors) {
-  const container = document.getElementById('errorList');
-  if (!errors || errors.length === 0) {
-    container.innerHTML = '<div style="padding: 20px; color: var(--text-muted); text-align: center; font-size: 13px;">No errors recorded</div>';
-    return;
-  }
-  container.innerHTML = errors.slice(0, 6).map(e =>
-    '<div class="error-item">' +
-    '<div style="min-width:0;flex:1;">' +
-    '<div class="pattern">' + escapeHtml(e.pattern) + '</div>' +
-    '<div class="meta">' + e.unique_apps + ' app' + (e.unique_apps !== 1 ? 's' : '') + ' affected</div>' +
-    '</div>' +
-    '<span class="count-badge">' + e.count.toLocaleString() + 'x</span>' +
-    '</div>'
-  ).join('');
-}
-
-function updateFailedApps(apps) {
-  const container = document.getElementById('failedAppsGrid');
-  const activeDays = parseInt(document.querySelector('.filter-btn.active')?.dataset.days || '1');
-  let minInstalls = 10;
-  if (activeDays <= 1) minInstalls = 5;
-  else if (activeDays <= 7) minInstalls = 15;
-  else if (activeDays <= 30) minInstalls = 40;
-  else if (activeDays <= 90) minInstalls = 100;
-  else minInstalls = 100;
-  document.getElementById('failedAppsThreshold').textContent = '(min. ' + minInstalls + ' installs)';
-  if (!apps || apps.length === 0) {
-    container.innerHTML = '<div style="padding: 20px; color: var(--text-muted); text-align: center; font-size: 13px;">Not enough data (min. ' + minInstalls + ' installs)</div>';
-    return;
-  }
-  container.innerHTML = apps.slice(0, 8).map(a => {
-    const typeClass = (a.type || '').toLowerCase();
-    const typeBadge = a.type && a.type !== 'unknown' ? '<span class="type-badge ' + typeClass + '">' + a.type.toUpperCase() + '</span>' : '';
-    const rate = a.failure_rate;
-    const severityClass = rate >= 30 ? 'critical' : rate >= 15 ? 'warning' : 'moderate';
-    return '<div class="failed-app-card">' +
-      '<div class="app-info">' + typeBadge + '<span class="app-name">' + escapeHtml(a.app) + '</span>' +
-      '<span class="details">' + a.failed_count + '/' + a.total_count + '</span>' +
-      '</div>' +
-      '<span class="failure-rate ' + severityClass + '">' + rate.toFixed(1) + '%</span>' +
-      '</div>';
-  }).join('');
-}
-
-function escapeHtml(str) {
-  if (!str) return '';
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
-function formatTimestamp(ts) {
-  if (!ts) return '-';
-  const d = new Date(ts);
-  // Format: "Feb 11, 2026, 4:33 PM"
-  return d.toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true
-  });
-}
-
-function initSortableHeaders() {
-  document.querySelectorAll('th.sortable').forEach(th => {
-    th.style.cursor = 'pointer';
-    th.addEventListener('click', () => sortByColumn(th.dataset.sort));
-  });
-}
-
-function sortByColumn(field) {
-  if (currentSort.field === field) {
-    currentSort.dir = currentSort.dir === 'asc' ? 'desc' : 'asc';
-  } else {
-    currentSort.field = field;
-    currentSort.dir = 'desc';
-  }
-
-  document.querySelectorAll('th.sortable').forEach(th => {
-    th.classList.remove('sort-asc', 'sort-desc');
-    th.textContent = th.textContent.replace(/[▲▼]/g, '').trim();
-  });
-
-  const activeTh = document.querySelector('th[data-sort=\"' + field + '\"]');
-  if (activeTh) {
-    activeTh.classList.add(currentSort.dir === 'asc' ? 'sort-asc' : 'sort-desc');
-    activeTh.textContent += ' ' + (currentSort.dir === 'asc' ? '▲' : '▼');
-  }
-
-  currentPage = 1;
-  fetchPaginatedRecords();
-}
-
-function toggleAllApps() {
-  showingAllApps = !showingAllApps;
-  const btn = document.getElementById('viewAllAppsBtn');
-  const container = document.getElementById('appsChartContainer');
-
-  if (showingAllApps) {
-    btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg> Show Less';
-    container.style.height = '600px';
-  } else {
-    btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg> View All';
-    container.style.height = '420px';
-  }
-
-  updateAppsChart(allAppsData);
-}
-
-function updateAppsChart(topApps) {
-  const displayApps = showingAllApps ? topApps.slice(0, 30) : topApps.slice(0, 15);
-  const colors = displayApps.map((_, i) => appBarColors[i % appBarColors.length]);
-
-  if (charts.apps) charts.apps.destroy();
-  charts.apps = new Chart(document.getElementById('appsChart'), {
-    type: 'bar',
-    data: {
-      labels: displayApps.map(a => a.app),
-      datasets: [{
-        label: 'Installations',
-        data: displayApps.map(a => a.count),
-        backgroundColor: colors,
-        borderRadius: 6,
-        borderSkipped: false
-      }]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      indexAxis: 'x',
-      onClick: function(evt, elements) {
-        // Click a bar → open the per-script daily drill-down on the Scripts page
-        if (elements && elements.length > 0) {
-          const app = displayApps[elements[0].index]?.app;
-          if (app) window.location.href = '/script-analysis?app=' + encodeURIComponent(app);
-        }
-      },
-      onHover: function(evt, elements) {
-        evt.native.target.style.cursor = elements && elements.length ? 'pointer' : 'default';
-      },
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          backgroundColor: 'rgba(21, 27, 35, 0.95)',
-          titleColor: '#e2e8f0',
-          bodyColor: '#e2e8f0',
-          borderColor: '#2d3748',
-          borderWidth: 1,
-          padding: 12,
-          displayColors: true,
-          callbacks: {
-            label: function(ctx) {
-              return ctx.parsed.y.toLocaleString() + ' installations (click for details)';
-            }
-          }
-        }
-      },
-      scales: {
-        x: {
-          ticks: {
-            color: '#8b949e',
-            maxRotation: 45,
-            minRotation: 45
-          },
-          grid: { display: false }
-        },
-        y: {
-          beginAtZero: true,
-          ticks: {
-            color: '#8b949e',
-            callback: function(value) {
-              if (value >= 1000) return (value / 1000).toFixed(0) + 'k';
-              return value;
-            }
-          },
-          grid: { color: '#2d3748' }
-        }
-      }
-    }
-  });
-}
-
-function updateCharts(data) {
-  // Daily chart
-  if (charts.daily) charts.daily.destroy();
-  charts.daily = new Chart(document.getElementById('dailyChart'), {
-    type: 'line',
-    data: {
-      labels: data.daily_stats.map(d => d.date.slice(5)),
-      datasets: [
-        {
-          label: 'Success',
-          data: data.daily_stats.map(d => d.success),
-          borderColor: '#22c55e',
-          backgroundColor: 'rgba(34, 197, 94, 0.1)',
-          fill: true,
-          tension: 0.4,
-          borderWidth: 2
-        },
-        {
-          label: 'Failed',
-          data: data.daily_stats.map(d => d.failed),
-          borderColor: '#ef4444',
-          backgroundColor: 'rgba(239, 68, 68, 0.1)',
-          fill: true,
-          tension: 0.4,
-          borderWidth: 2
-        }
-      ]
-    },
-    options: {
-      ...chartDefaults,
-      plugins: { legend: { display: true, position: 'top', labels: { color: '#8b949e', usePointStyle: true } } }
-    }
-  });
-
-  // OS distribution - horizontal bar chart
-  if (charts.os) charts.os.destroy();
-  charts.os = new Chart(document.getElementById('osChart'), {
-    type: 'bar',
-    data: {
-      labels: data.os_distribution.map(o => o.os),
-      datasets: [{
-        data: data.os_distribution.map(o => o.count),
-        backgroundColor: appBarColors.slice(0, data.os_distribution.length),
-        borderRadius: 4,
-        borderSkipped: false
-      }]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      indexAxis: 'y',
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          callbacks: {
-            label: function(ctx) {
-              return ctx.parsed.x.toLocaleString() + ' installations';
-            }
-          }
-        }
-      },
-      scales: {
-        x: {
-          ticks: {
-            color: '#8b949e',
-            callback: function(v) { return v >= 1000 ? (v / 1000).toFixed(0) + 'k' : v; }
-          },
-          grid: { color: '#2d3748' }
-        },
-        y: {
-          ticks: { color: '#8b949e' },
-          grid: { display: false }
-        }
-      }
-    }
-  });
-
-  // Status pie chart (now includes Aborted — was silently missing before)
-  if (charts.status) charts.status.destroy();
-  charts.status = new Chart(document.getElementById('statusChart'), {
-    type: 'doughnut',
-    data: {
-      labels: ['Success', 'Failed', 'Aborted', 'Installing'],
-      datasets: [{
-        data: [data.success_count, data.failed_count, data.aborted_count || 0, data.installing_count],
-        backgroundColor: ['#22c55e', '#ef4444', '#a855f7', '#eab308'],
-        borderWidth: 0
-      }]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: { position: 'right', labels: { color: '#8b949e', padding: 12 } }
-      }
-    }
-  });
-
-  // Platform doughnut (pve vs incus)
-  if (charts.platform) charts.platform.destroy();
-  const platStats = (data.platform_stats || []);
-  const platColors = { pve: '#e67e22', incus: '#14b8a6', unknown: '#64748b' };
-  charts.platform = new Chart(document.getElementById('platformChart'), {
-    type: 'doughnut',
-    data: {
-      labels: platStats.map(p => p.platform === 'pve' ? 'Proxmox VE' : p.platform === 'incus' ? 'Incus' : 'Unknown'),
-      datasets: [{
-        data: platStats.map(p => p.count),
-        backgroundColor: platStats.map(p => platColors[p.platform] || '#64748b'),
-        borderWidth: 0
-      }]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: { position: 'right', labels: { color: '#8b949e', padding: 12 } }
-      }
-    }
-  });
-
-  // Top apps chart
-  updateAppsChart(data.top_apps || []);
-}
-
-function updateTable(records) {
-  allRecords = records || [];
-
-  // Populate OS filter
-  const osFilter = document.getElementById('filterOs');
-  const uniqueOs = [...new Set(allRecords.map(r => r.os_type).filter(Boolean))];
-  osFilter.innerHTML = '<option value="">All OS</option>' +
-    uniqueOs.map(os => '<option value="' + os + '">' + os + '</option>').join('');
-
-  filterTable();
-}
-
-function changePerPage() {
-  perPage = parseInt(document.getElementById('perPageSelect').value);
-  currentPage = 1;
-  fetchPaginatedRecords();
-}
-
-async function fetchPaginatedRecords() {
-  const status = document.getElementById('filterStatus').value;
-  const app = document.getElementById('filterApp').value;
-  const os = document.getElementById('filterOs').value;
-  const type = document.getElementById('filterType').value;
-  const platformSel = document.getElementById('filterPlatform') ? document.getElementById('filterPlatform').value : '';
-
-  try {
-    const { days, repo, platform, slug } = getActiveFilters();
-    // Table-local platform select overrides the global chip filter
-    const effPlatform = platformSel || platform;
-
-    let url = '/api/records?page=' + currentPage + '&limit=' + perPage + '&days=' + days + '&repo=' + encodeURIComponent(repo);
-    if (effPlatform) url += '&platform=' + encodeURIComponent(effPlatform);
-    if (slug) url += '&slug=' + encodeURIComponent(slug);
-    if (status) url += '&status=' + encodeURIComponent(status);
-    if (app) url += '&app=' + encodeURIComponent(app);
-    if (os) url += '&os=' + encodeURIComponent(os);
-    if (type) url += '&type=' + encodeURIComponent(type);
-    if (currentSort.field) {
-      url += '&sort=' + (currentSort.dir === 'desc' ? '-' : '') + currentSort.field;
-    }
-
-    const response = await fetch(url);
-    if (!response.ok) throw new Error('Failed to fetch records');
-    const data = await response.json();
-
-    totalPages = data.total_pages || 1;
-    document.getElementById('pageInfo').textContent = 'Page ' + currentPage + ' of ' + totalPages + ' (' + data.total + ' total)';
-    document.getElementById('prevBtn').disabled = currentPage <= 1;
-    document.getElementById('nextBtn').disabled = currentPage >= totalPages;
-
-    renderTableRows(data.records || []);
-  } catch (e) {
-    console.error('Pagination error:', e);
-  }
-}
-
-function prevPage() {
-  if (currentPage > 1) {
-    currentPage--;
-    fetchPaginatedRecords();
-  }
-}
-
-function nextPage() {
-  if (currentPage < totalPages) {
-    currentPage++;
-    fetchPaginatedRecords();
-  }
-}
-
-// Store current records for detail view
-let currentRecords = [];
-
-function renderTableRows(records) {
-  const tbody = document.getElementById('recordsTable');
-  currentRecords = records;
-
-  if (records.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="10"><div class="loading" style="padding: 40px;">No records found</div></td></tr>';
-    return;
-  }
-
-  tbody.innerHTML = records.map((r, index) => {
-    const statusClass = r.status || 'unknown';
-    const typeClass = (r.type || '').toLowerCase();
-    const created = r.created ? formatTimestamp(r.created) : '-';
-    const osDisplay = r.os_type ? (r.os_type + (r.os_version ? ' ' + r.os_version : '')) : '-';
-    const repoDisplay = r.repo_slug || r.repo_source || '-';
-
-    // Compact resources column: "4C · 8GB · 20GB"
-    const resParts = [];
-    if (r.core_count) resParts.push(r.core_count + 'C');
-    if (r.ram_size) resParts.push((r.ram_size >= 1024 ? (r.ram_size / 1024).toFixed(0) + 'G' : r.ram_size + 'M'));
-    if (r.disk_size) resParts.push(r.disk_size + 'G');
-    const resources = resParts.length ? resParts.join(' · ') : '-';
-
-    const duration = r.install_duration ? formatDuration(r.install_duration) : '-';
-
-    // Exit code column: show badge for failed, dash for success/running
-    let exitCodeCell = '-';
-    if (r.status === 'failed' && r.exit_code !== undefined && r.exit_code !== null) {
-      exitCodeCell = '<span class="exit-code-badge">' + r.exit_code + '</span>';
-    } else if (r.status === 'aborted' && r.exit_code !== undefined && r.exit_code !== null) {
-      exitCodeCell = '<span class="exit-code-badge aborted">' + r.exit_code + '</span>';
-    }
-
-    const archBadge = r.has_arm
-      ? '<span class="arm-badge" title="Installed on ARM64 hardware">ARM64</span>'
-      : '';
-
-    return '<tr class="clickable-row' + (r.has_arm ? ' arm-row' : '') + '" onclick="showRecordDetail(' + index + ')">' +
-      '<td><span class="status-badge ' + statusClass + '">' + escapeHtml(r.status || 'unknown') + '</span></td>' +
-      '<td>' + exitCodeCell + '</td>' +
-      '<td><span class="type-badge ' + typeClass + '">' + escapeHtml((r.type || '-').toUpperCase()) + '</span></td>' +
-      '<td>' + platformBadge(r.platform) + '</td>' +
-      '<td><strong>' + escapeHtml(r.nsapp || '-') + '</strong> ' + archBadge + '</td>' +
-      '<td class="repo-slug-cell" title="' + escapeAttr(repoDisplay) + '">' + escapeHtml(repoDisplay) + '</td>' +
-      '<td>' + escapeHtml(osDisplay) + '</td>' +
-      '<td style="white-space:nowrap;">' + resources + '</td>' +
-      '<td>' + duration + '</td>' +
-      '<td>' + created + '</td>' +
-      '</tr>';
-  }).join('');
-}
-
-function showRecordDetail(index) {
-  const record = currentRecords[index];
-  if (!record) return;
-
-  const modal = document.getElementById('detailModal');
-  const modalTitle = document.getElementById('modalTitle').querySelector('span');
-  const modalBody = document.getElementById('modalBody');
-
-  modalTitle.textContent = record.nsapp || 'Record Details';
-
-  let html = '';
-
-  // ── Header Card: quick overview strip ──
-  const statusCls = record.status || 'unknown';
-  const typeLbl = formatType(record.type) || record.type || '-';
-  const durStr = record.install_duration ? formatDuration(record.install_duration) : null;
-
-  html += '<div class="detail-header-strip">';
-  html += '<div class="header-chip"><span class="status-badge ' + statusCls + '">' + escapeHtml(record.status || 'unknown') + '</span></div>';
-  if (record.exit_code !== undefined && record.exit_code !== null) {
-    const ecClass = record.exit_code === 0 ? 'ec-ok' : 'ec-fail';
-    html += '<div class="header-chip"><span class="header-chip-label">Exit</span><span class="exit-code-inline ' + ecClass + '">' + record.exit_code + '</span></div>';
-  }
-  html += '<div class="header-chip"><span class="header-chip-label">Type</span>' + escapeHtml(typeLbl) + '</div>';
-  if (record.method && record.method !== 'default') {
-    html += '<div class="header-chip"><span class="header-chip-label">Method</span>' + escapeHtml(record.method) + '</div>';
-  }
-  if (durStr) {
-    html += '<div class="header-chip"><span class="header-chip-label">Duration</span>' + escapeHtml(durStr) + '</div>';
-  }
-  if (record.created) {
-    html += '<div class="header-chip"><span class="header-chip-label">Created</span>' + escapeHtml(formatFullTimestamp(record.created)) + '</div>';
-  }
-  html += '</div>';
-
-  // ── Pipeline Section ──
-  html += '<div class="detail-section">';
-  html += '<div class="detail-section-header"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg> Installation Pipeline</div>';
-  if (record.pipeline) {
-    html += renderPipeline(record.pipeline);
-  } else {
-    html += '<div class="pipeline-empty">Pipeline tracking not available for this record</div>';
-  }
-  html += '</div>';
-
-  // ── Error Section (if failed) ──
-  if (record.error || record.error_message) {
-    html += '<div class="detail-section">';
-    html += '<div class="detail-section-header"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg> Error Details</div>';
-    html += renderErrorSection(record);
-    html += '</div>';
-  }
-
-  // ── System & Hardware (2-col layout) ──
-  html += '<div class="detail-section">';
-  html += '<div class="detail-section-header"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2" ry="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg> System Resources</div>';
-  html += '<div class="detail-grid">';
-  html += buildDetailItem('CPU Cores', record.core_count ? record.core_count + ' Cores' : null);
-  html += buildDetailItem('RAM', record.ram_size ? formatBytes(record.ram_size * 1024 * 1024) : null);
-  html += buildDetailItem('Disk Size', record.disk_size ? record.disk_size + ' GB' : null);
-  html += buildDetailItem('CT Type', record.ct_type !== undefined ? (record.ct_type === 1 ? 'Unprivileged' : 'Privileged') : null);
-  html += '</div></div>';
-
-  // ── OS Section ──
-  html += '<div class="detail-section">';
-  html += '<div class="detail-section-header"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg> Operating System</div>';
-  html += '<div class="detail-grid">';
-  html += buildDetailItem('OS Type', record.os_type);
-  html += buildDetailItem('OS Version', record.os_version);
-  html += buildDetailItem('Platform', platformBadge(record.platform), null, true);
-  html += buildDetailItem(record.platform === 'incus' ? 'Incus Version' : 'PVE Version', record.pve_version);
-  html += buildDetailItem('Architecture', record.has_arm
-    ? '<span class="arm-badge">ARM64</span>'
-    : '<span class="arch-badge">amd64</span>', null, true);
-  html += '</div></div>';
-
-  // ── Hardware Section ──
-  const hasHardwareInfo = record.cpu_vendor || record.cpu_model || record.gpu_vendor || record.gpu_model || record.ram_speed;
-  if (hasHardwareInfo) {
-    html += '<div class="detail-section">';
-    html += '<div class="detail-section-header"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg> Hardware</div>';
-    html += '<div class="detail-grid">';
-    html += buildDetailItem('CPU Vendor', record.cpu_vendor);
-    html += buildDetailItem('CPU Model', record.cpu_model);
-    html += buildDetailItem('RAM Speed', record.ram_speed);
-    html += buildDetailItem('GPU Vendor', record.gpu_vendor);
-    html += buildDetailItem('GPU Model', record.gpu_model);
-    html += buildDetailItem('GPU Passthrough', formatPassthrough(record.gpu_passthrough));
-    html += '</div></div>';
-  }
-
-  // ── Meta Section (IDs / timestamps) ──
-  html += '<div class="detail-section">';
-  html += '<div class="detail-section-header"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg> Metadata</div>';
-  html += '<div class="detail-grid">';
-  html += buildDetailItem('Repo Source', record.repo_source);
-  html += buildDetailItem('Repository', record.repo_slug);
-  html += buildDetailItem('Random ID', record.random_id, 'mono');
-  if (record.execution_id) {
-    html += buildDetailItem('Execution ID', record.execution_id, 'mono');
-  }
-  html += buildDetailItem('Created', formatFullTimestamp(record.created));
-  html += buildDetailItem('Updated', formatFullTimestamp(record.updated));
-  html += '</div></div>';
-
-  modalBody.innerHTML = html;
-  modal.classList.add('active');
-  document.body.style.overflow = 'hidden';
-}
-
-// Render the error section with parsed trace
-function renderErrorSection(record) {
-  var raw = record.error || '';
-  var html = '';
-
-  // Parse the structured error format: "exit_code=N | description\n---\nlog_lines"
-  var headerLine = '';
-  var traceLines = '';
-  var separatorIdx = raw.indexOf('\n---\n');
-  if (separatorIdx !== -1) {
-    headerLine = raw.substring(0, separatorIdx).trim();
-    traceLines = raw.substring(separatorIdx + 5).trim();
-  } else {
-    // No separator — try pipe-separated (container fallback uses | as newline)
-    var pipeIdx = raw.indexOf('|---|');
-    if (pipeIdx !== -1) {
-      headerLine = raw.substring(0, pipeIdx).trim();
-      traceLines = raw.substring(pipeIdx + 4).replace(/\|/g, '\n').trim();
-    } else {
-      headerLine = raw;
-    }
-  }
-
-  var h = parseErrorHeader(headerLine);
-  var headline = record.error_message || h.explanation || headerLine;
-
-  if (record.error_category || headline) {
-    html += '<div class="error-category-row">';
-    if (record.error_category) {
-      html += '<span class="error-category-badge">' + escapeHtml(record.error_category) + '</span>';
-    }
-    if (headline) {
-      html += '<span class="error-explanation">' + escapeHtml(headline) + '</span>';
-    }
-    html += '</div>';
-  }
-
-  var command = record.failed_command
-    ? (record.failed_line ? 'at line ' + record.failed_line + ': ' : '') + record.failed_command
-    : h.at;
-  var details = [
-    ['Exit code meaning', record.error_message ? h.explanation : ''],
-    ['Step', record.error_step || h.step],
-    ['Phase', record.error_phase],
-    ['Function', record.failed_function || h.fn],
-    ['Command', command]
-  ].filter(function(d) { return d[1]; });
-  if (details.length) {
-    html += '<div class="detail-grid" style="margin-bottom:12px;">' + details.map(function(d) {
-      return buildDetailItem(d[0], d[1], d[0] === 'Command' || d[0] === 'Function' ? 'mono' : null);
-    }).join('') + '</div>';
-  }
-
-  // Error trace / log
-  if (traceLines) {
-    html += '<div class="error-trace-header">';
-    html += '<span>Error Trace</span>';
-    html += '<button class="btn-copy-trace" onclick="copyErrorTrace(this)" title="Copy to clipboard"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg> Copy</button>';
-    html += '</div>';
-    html += '<pre class="error-trace-box" data-trace="' + escapeAttr(raw) + '">' + escapeHtml(traceLines) + '</pre>';
-  } else if (!headerLine && raw) {
-    // Raw unstructured error — show as-is
-    html += '<div class="error-trace-header"><span>Raw Error</span></div>';
-    html += '<pre class="error-trace-box">' + escapeHtml(raw) + '</pre>';
-  } else if (!traceLines && headerLine) {
-    html += '<div class="error-trace-empty">No error trace was captured for this record.</div>';
-  }
-
-  return html;
-}
-
-// "exit_code=N | explanation | step: … | in fn | at line L: cmd"; v1/v2 headers have fewer segments.
-function parseErrorHeader(header) {
-  var out = { explanation: '', step: '', fn: '', at: '' };
-  if (!/^exit_code=\d+/.test(header || '')) return out;
-  var atIdx = header.indexOf('| at line ');
-  if (atIdx !== -1) {
-    out.at = header.substring(atIdx + 2).trim();
-    header = header.substring(0, atIdx);
-  }
-  var rest = [];
-  header.split('|').slice(1).forEach(function(seg) {
-    seg = seg.trim();
-    if (!seg) return;
-    if (seg.indexOf('step: ') === 0) out.step = seg.substring(6);
-    else if (/^in [\w:.-]+$/.test(seg)) out.fn = seg.substring(3);
-    else rest.push(seg);
-  });
-  out.explanation = rest.join(' — ');
-  return out;
-}
-
-function copyErrorTrace(btn) {
-  var box = btn.closest('.detail-section').querySelector('.error-trace-box');
-  var text = box ? (box.getAttribute('data-trace') || box.textContent) : '';
-  navigator.clipboard.writeText(text).then(function() {
-    var orig = btn.innerHTML;
-    btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> Copied!';
-    setTimeout(function() { btn.innerHTML = orig; }, 1500);
-  });
-}
-
-function buildDetailItem(label, value, extraClass, allowHtml) {
-  if (value === null || value === undefined || value === '') {
-    return '<div class="detail-item"><div class="label">' + escapeHtml(label) + '</div><div class="value" style="color: var(--text-secondary);">—</div></div>';
-  }
-  const valueClass = extraClass ? 'value ' + extraClass : 'value';
-  const rendered = allowHtml ? String(value) : escapeHtml(String(value));
-  return '<div class="detail-item"><div class="label">' + escapeHtml(label) + '</div><div class="' + valueClass + '">' + rendered + '</div></div>';
-}
-
-// renderPipeline renders the installation pipeline as a visual step indicator.
-// Input: JSON string or array of [{s: "installing", t: "2025-..."}, ...]
-function renderPipeline(pipelineData) {
-  var steps;
-  try {
-    steps = typeof pipelineData === 'string' ? JSON.parse(pipelineData) : pipelineData;
-  } catch (e) {
-    return '<div class="pipeline-empty">Pipeline data unavailable</div>';
-  }
-  if (!Array.isArray(steps) || steps.length === 0) {
-    return '<div class="pipeline-empty">No pipeline data</div>';
-  }
-
-  // Status display labels
-  var statusLabels = {
-    'installing': 'Installing',
-    'validation': 'Validation',
-    'configuring': 'Configuring',
-    'success': 'Completed',
-    'failed': 'Failed',
-    'aborted': 'Aborted'
+(function () {
+  'use strict';
+  const R = window.RunUI;
+  const esc = R.esc;
+  const $ = function (id) { return document.getElementById(id); };
+
+  const state = {
+    days: '1', repo: 'all', platform: '', slug: '',
+    page: 1, limit: 25, sort: '-created', search: '', status: '', type: '', os: '',
   };
+  let records = [];
+  let totalPages = 1;
+  let timer = null;
 
-  // Terminal statuses
-  var terminalStatuses = { 'success': true, 'failed': true, 'aborted': true };
-
-  var html = '<div class="pipeline-track">';
-  for (var i = 0; i < steps.length; i++) {
-    var step = steps[i];
-    var status = step.s || 'unknown';
-    var label = statusLabels[status] || status;
-    var isTerminal = terminalStatuses[status] || false;
-    var isLast = (i === steps.length - 1);
-
-    // Determine step state for styling
-    var stepClass = 'pipeline-step';
-    if (status === 'success') {
-      stepClass += ' step-success';
-    } else if (status === 'failed') {
-      stepClass += ' step-failed';
-    } else if (status === 'aborted') {
-      stepClass += ' step-aborted';
-    } else if (!isLast || !isTerminal) {
-      // Non-terminal step that was reached = passed
-      stepClass += ' step-ok';
-    }
-
-    // Format timestamp
-    var timeStr = '';
-    if (step.t) {
-      try {
-        var d = new Date(step.t);
-        timeStr = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-      } catch (e) { timeStr = ''; }
-    }
-
-    html += '<div class="' + stepClass + '">';
-    html += '<div class="step-icon">';
-    if (status === 'success') {
-      html += '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>';
-    } else if (status === 'failed') {
-      html += '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
-    } else if (status === 'aborted') {
-      html += '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>';
-    } else {
-      html += '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>';
-    }
-    html += '</div>';
-    html += '<div class="step-label">' + escapeHtml(label) + '</div>';
-    if (timeStr) {
-      html += '<div class="step-time">' + escapeHtml(timeStr) + '</div>';
-    }
-    html += '</div>';
-
-    // Arrow between steps
-    if (!isLast) {
-      html += '<div class="pipeline-arrow"><svg width="20" height="14" viewBox="0 0 20 14"><path d="M0 7h16M12 2l5 5-5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>';
-    }
+  function readURL() {
+    const q = new URLSearchParams(location.search);
+    ['days', 'repo', 'platform', 'slug', 'search', 'status', 'type', 'os', 'sort'].forEach(function (k) {
+      if (q.has(k)) state[k] = q.get(k);
+    });
   }
-  html += '</div>';
-  return html;
-}
-
-function formatType(type) {
-  if (!type) return null;
-  const types = {
-    'lxc': 'LXC Container',
-    'vm': 'Virtual Machine',
-    'addon': 'Add-on',
-    'pve': 'Proxmox VE',
-    'tool': 'Tool'
-  };
-  return types[type.toLowerCase()] || type;
-}
-
-function formatPassthrough(pt) {
-  if (!pt) return null;
-  const modes = {
-    'igpu': 'Integrated GPU',
-    'dgpu': 'Dedicated GPU',
-    'vgpu': 'Virtual GPU',
-    'none': 'None',
-    'unknown': 'Unknown'
-  };
-  return modes[pt.toLowerCase()] || pt;
-}
-
-function formatBytes(bytes) {
-  if (!bytes) return null;
-  const gb = bytes / (1024 * 1024 * 1024);
-  if (gb >= 1) return gb.toFixed(1) + ' GB';
-  const mb = bytes / (1024 * 1024);
-  return mb.toFixed(0) + ' MB';
-}
-
-function formatDuration(seconds) {
-  if (!seconds) return null;
-  if (seconds < 60) return seconds + 's';
-  const mins = Math.floor(seconds / 60);
-  const secs = seconds % 60;
-  if (mins < 60) return mins + 'm ' + secs + 's';
-  const hours = Math.floor(mins / 60);
-  const remainMins = mins % 60;
-  return hours + 'h ' + remainMins + 'm';
-}
-
-function formatFullTimestamp(ts) {
-  if (!ts) return null;
-  const d = new Date(ts);
-  return d.toLocaleDateString() + ' ' + d.toLocaleTimeString();
-}
-
-function closeModal() {
-  const modal = document.getElementById('detailModal');
-  modal.classList.remove('active');
-  document.body.style.overflow = '';
-}
-
-function closeModalOutside(event) {
-  if (event.target === document.getElementById('detailModal')) {
-    closeModal();
+  function writeURL() {
+    const q = new URLSearchParams();
+    const defaults = { days: '1', repo: 'all', sort: '-created' };
+    ['days', 'repo', 'platform', 'slug', 'search', 'status', 'type', 'os', 'sort'].forEach(function (k) {
+      if (state[k] && state[k] !== defaults[k]) q.set(k, state[k]);
+    });
+    const s = q.toString();
+    history.replaceState(null, '', location.pathname + (s ? '?' + s : ''));
   }
-}
-
-// Close modal with Escape key
-document.addEventListener('keydown', function(e) {
-  if (e.key === 'Escape') {
-    closeModal();
-    closeHealthModal();
-  }
-});
-
-function filterTable() {
-  currentPage = 1;
-  fetchPaginatedRecords();
-}
-
-function exportCSV() {
-  if (allRecords.length === 0) {
-    alert('No data to export');
-    return;
+  function filterQuery() {
+    const q = new URLSearchParams({ days: state.days, repo: state.repo });
+    if (state.platform) q.set('platform', state.platform);
+    if (state.slug) q.set('slug', state.slug);
+    return q;
   }
 
-  const headers = ['App', 'Status', 'Platform', 'Repository', 'OS Type', 'OS Version', 'Type', 'Method', 'Cores', 'RAM (MB)', 'Disk (GB)', 'Exit Code', 'Duration (s)', 'Error', 'PVE Version'];
-  const rows = allRecords.map(r => [
-    r.nsapp || '',
-    r.status || '',
-    r.platform || '',
-    r.repo_slug || r.repo_source || '',
-    r.os_type || '',
-    r.os_version || '',
-    r.type || '',
-    r.method || '',
-    r.core_count || '',
-    r.ram_size || '',
-    r.disk_size || '',
-    r.exit_code || '',
-    r.install_duration || '',
-    (r.error || '').replace(/,/g, ';'),
-    r.pve_version || ''
-  ]);
-
-  const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\\n');
-  const blob = new Blob([csv], { type: 'text/csv' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'telemetry_' + new Date().toISOString().slice(0, 10) + '.csv';
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-async function showHealthCheck() {
-  const modal = document.getElementById('healthModal');
-  const body = document.getElementById('healthModalBody');
-  body.innerHTML = '<div class="loading">Checking...</div>';
-  modal.classList.add('active');
-  document.body.style.overflow = 'hidden';
-
-  try {
-    const resp = await fetch('/healthz');
-    const data = await resp.json();
-
-    const isOk = data.status === 'ok';
-    const statusClass = isOk ? 'ok' : 'error';
-    const icon = isOk ? '✅' : '❌';
-    const title = isOk ? 'All Systems Operational' : 'Service Degraded';
-
-    let html = '<div class="health-status ' + statusClass + '">';
-    html += '<span class="icon">' + icon + '</span>';
-    html += '<div class="details">';
-    html += '<div class="title">' + title + '</div>';
-    html += '<div class="subtitle">Last checked: ' + new Date().toLocaleTimeString() + '</div>';
-    html += '</div></div>';
-
-    html += '<div class="health-info">';
-    html += '<div><span>Status</span><span>' + data.status + '</span></div>';
-    html += '<div><span>Server Time</span><span>' + new Date(data.time).toLocaleString() + '</span></div>';
-    if (data.pocketbase) {
-      html += '<div><span>PocketBase</span><span>' + (data.pocketbase === 'connected' ? '🟢 Connected' : '🔴 ' + data.pocketbase) + '</span></div>';
-    }
-    if (data.version) {
-      html += '<div><span>Version</span><span>' + data.version + '</span></div>';
-    }
-    html += '</div>';
-
-    body.innerHTML = html;
-  } catch (e) {
-    body.innerHTML = '<div class="health-status error"><span class="icon">❌</span><div class="details"><div class="title">Connection Failed</div><div class="subtitle">' + e.message + '</div></div></div>';
+  function syncControls() {
+    document.querySelectorAll('.seg[data-filter]').forEach(function (seg) {
+      const key = seg.getAttribute('data-filter');
+      seg.querySelectorAll('button').forEach(function (b) {
+        b.setAttribute('aria-pressed', String(b.getAttribute('data-value') === state[key]));
+      });
+    });
+    $('logSearch').value = state.search;
+    $('logStatus').value = state.status;
+    $('logType').value = state.type;
+    $('logLimit').value = String(state.limit);
+    document.querySelectorAll('.th-sort').forEach(function (b) {
+      const f = b.getAttribute('data-sort');
+      const dir = state.sort === f ? 'ascending' : state.sort === '-' + f ? 'descending' : '';
+      if (dir) b.setAttribute('aria-sort', dir); else b.removeAttribute('aria-sort');
+    });
   }
-}
 
-function closeHealthModal(event) {
-  if (event && event.target !== document.getElementById('healthModal')) return;
-  document.getElementById('healthModal').classList.remove('active');
-  document.body.style.overflow = '';
-}
-
-async function refreshData() {
-  try {
-    await loadRepoSlugOptions();
-    const data = await fetchData();
-    updateStats(data);
-    updateCharts(data);
-    // Refresh paginated Installation Log with current filters (NOT from cached recent_records)
-    currentPage = 1;
-    fetchPaginatedRecords();
-  } catch (e) {
-    console.error(e);
+  function showError(msg) {
+    const b = $('errorBanner');
+    b.textContent = msg;
+    b.hidden = !msg;
   }
-}
 
-// Initial load
-refreshData();
-initSortableHeaders();
-
-// Source button clicks
-document.querySelectorAll('.source-btn').forEach(btn => {
-  btn.addEventListener('click', function() {
-    document.querySelectorAll('.source-btn').forEach(b => b.classList.remove('active'));
-    this.classList.add('active');
-    const slugSelect = document.getElementById('filterSlug');
-    if (slugSelect) slugSelect.value = '';
-    refreshData();
-  });
-});
-
-// Quickfilter button clicks
-document.querySelectorAll('.filter-btn').forEach(btn => {
-  btn.addEventListener('click', function() {
-    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
-    this.classList.add('active');
-    refreshData();
-  });
-});
-
-// Platform filter button clicks (pve / incus / all)
-document.querySelectorAll('.platform-btn').forEach(btn => {
-  btn.addEventListener('click', function() {
-    document.querySelectorAll('.platform-btn').forEach(b => b.classList.remove('active'));
-    this.classList.add('active');
-    // Keep the table-local platform select in sync with the global chip
-    const sel = document.getElementById('filterPlatform');
-    if (sel) sel.value = this.dataset.platform || '';
-    refreshData();
-  });
-});
-
-// Auto-refresh functionality
-function toggleAutoRefresh() {
-  autoRefreshEnabled = document.getElementById('autoRefreshToggle').checked;
-  localStorage.setItem('autoRefresh', autoRefreshEnabled);
-
-  const intervalDisplay = document.getElementById('refreshInterval');
-
-  if (autoRefreshEnabled) {
-    intervalDisplay.classList.add('active');
-    startAutoRefresh();
-  } else {
-    intervalDisplay.classList.remove('active');
-    stopAutoRefresh();
+  function card(label, value, sub, cls) {
+    return '<div class="card ' + (cls || '') + '"><div class="card-label">' + esc(label) + '</div>' +
+      '<div class="card-value">' + value + '</div><div class="card-sub">' + sub + '</div></div>';
   }
-}
 
-function startAutoRefresh() {
-  stopAutoRefresh(); // Clear any existing timer
+  function renderCards(d) {
+    const s = d.summary || {};
+    const finished = (s.success || 0) + (s.failed || 0);
+    const popular = (d.apps || []).slice(0, 3).map(function (a, i) {
+      return '<li><span class="rank">' + (i + 1) + '</span><span class="name">' + esc(a.label) + '</span><span class="n">' + R.num(a.runs) + '</span></li>';
+    }).join('');
+    $('cards').innerHTML =
+      card('Runs', R.num(s.runs), R.num(d.total_all_time) + ' all time, ' + R.num(s.in_progress) + ' still running') +
+      card('Success rate', finished ? R.pct(s.success_rate) : 'No data', R.num(s.success) + ' of ' + R.num(finished) + ' finished runs', 'ok') +
+      card('Failed', R.num(s.failed), finished ? R.pct(s.failure_rate) + ' of finished runs' : 'no finished runs', 'bad') +
+      card('Aborted', R.num(s.aborted), 'cancelled or declined', 'abort') +
+      card('No result', R.num(s.no_result), 'stopped reporting before a result', 'silent') +
+      '<div class="card popular"><div class="card-label">Most popular</div>' +
+      (popular ? '<ol class="podium">' + popular + '</ol>' : '<div class="card-sub">No runs in this period</div>') + '</div>';
+  }
 
-  let countdown = autoRefreshInterval / 1000;
-  const intervalDisplay = document.getElementById('refreshInterval');
+  function errorsURL(extra) {
+    const q = filterQuery();
+    Object.keys(extra || {}).forEach(function (k) { q.set(k, extra[k]); });
+    return '/error-analysis?' + q.toString();
+  }
 
-  // Update countdown display
-  const countdownTimer = setInterval(() => {
-    countdown--;
-    if (countdown <= 0) {
-      countdown = autoRefreshInterval / 1000;
+  function renderCauses(causes) {
+    if (!causes || !causes.length) {
+      $('topCauses').innerHTML = '<p class="empty">No failed runs in this period.</p>';
+      return;
     }
-    intervalDisplay.textContent = countdown + 's';
-  }, 1000);
-
-  // Actual refresh
-  autoRefreshTimer = setInterval(() => {
-    refreshData();
-    countdown = autoRefreshInterval / 1000;
-  }, autoRefreshInterval);
-
-  // Store countdown timer for cleanup
-  autoRefreshTimer.countdownTimer = countdownTimer;
-}
-
-function stopAutoRefresh() {
-  if (autoRefreshTimer) {
-    clearInterval(autoRefreshTimer);
-    if (autoRefreshTimer.countdownTimer) {
-      clearInterval(autoRefreshTimer.countdownTimer);
-    }
-    autoRefreshTimer = null;
+    $('topCauses').innerHTML = '<table class="compact"><thead><tr><th scope="col">Cause</th><th scope="col" class="num">Failures</th>' +
+      '<th scope="col" class="num">Apps</th><th scope="col" class="num">Setups</th><th scope="col" class="num">Last 24 h</th></tr></thead><tbody>' +
+      causes.map(function (c) {
+        return '<tr><td class="cause-cell"><a href="' + esc(errorsURL({ cause: c.key })) + '" class="cause-link' + (c.kind === 'command' ? ' is-code' : '') + '" title="' +
+          esc(c.message) + '">' + esc(c.message) + '</a><div class="cause-meta">' + esc((c.top_apps || []).join(', ')) + '</div></td>' +
+          '<td class="num strong bad">' + R.num(c.failures) + '</td><td class="num">' + R.num(c.apps) + '</td>' +
+          '<td class="num">' + R.num(c.setups) + '</td><td class="num">' + R.trend(c) + '</td></tr>';
+      }).join('') + '</tbody></table>';
   }
-  document.getElementById('refreshInterval').textContent = '15s';
-}
 
+  function renderFailing(apps, minRuns) {
+    $('errorsNote').textContent = 'Failure rates count apps with at least ' + minRuns + ' finished runs in this period.';
+    if (!apps || !apps.length) {
+      $('failingApps').innerHTML = '<p class="empty">No app with ' + minRuns + ' or more finished runs failed in this period.</p>';
+      return;
+    }
+    $('failingApps').innerHTML = '<table class="compact"><thead><tr><th scope="col">App</th><th scope="col" class="num">Finished</th>' +
+      '<th scope="col" class="num">Failed</th><th scope="col" class="num">Rate</th><th scope="col" class="num">Setups</th><th scope="col">Now</th></tr></thead><tbody>' +
+      apps.map(function (a) {
+        const sev = a.failure_rate >= 30 ? 'bad' : a.failure_rate >= 15 ? 'warn' : '';
+        const now = a.failing_now
+          ? '<span class="chip chip-failed" title="Last failure ' + esc(R.dateTime(a.last_failure)) + ' is newer than the last success">Failing</span>'
+          : '<span class="chip chip-success" title="Last success ' + esc(R.dateTime(a.last_success)) + '">Recovered</span>';
+        return '<tr><td><a href="' + esc(errorsURL({ app: a.app })) + '">' + esc(a.app) + '</a> ' + R.typeBadge(a.type) + '</td>' +
+          '<td class="num">' + R.num(a.success + a.failed) + '</td><td class="num bad">' + R.num(a.failed) + '</td>' +
+          '<td class="num strong ' + sev + '">' + R.pct(a.failure_rate) + '</td><td class="num" title="Distinct hardware and host setups among the failures">' +
+          R.num(a.setups_failed) + '</td><td>' + now + '</td></tr>';
+      }).join('') + '</tbody></table>';
+  }
 
-// Initialize auto-refresh state on load
-document.getElementById('autoRefreshToggle').checked = autoRefreshEnabled;
-if (autoRefreshEnabled) {
-  document.getElementById('refreshInterval').classList.add('active');
-  startAutoRefresh();
-}
+  function rateCell(r) {
+    const finished = r.success + r.failed;
+    if (!finished) return '<td class="num muted">none finished</td>';
+    const sev = r.failure_rate >= 30 ? 'bad' : r.failure_rate >= 15 ? 'warn' : '';
+    return '<td class="num ' + sev + '">' + R.pct(r.failure_rate) + '</td>';
+  }
+
+  function renderTopApps(apps) {
+    if (!apps || !apps.length) {
+      $('topApps').innerHTML = '<p class="empty">No runs in this period.</p>';
+      return;
+    }
+    $('topApps').innerHTML = '<table class="compact"><thead><tr><th scope="col" class="num">Rank</th><th scope="col">App</th><th scope="col" class="num">Runs</th>' +
+      '<th scope="col" class="num">Failure rate</th></tr></thead><tbody>' + apps.map(function (a, i) {
+        return '<tr><td class="num muted">' + (i + 1) + '</td><td><a href="/script-analysis?app=' + encodeURIComponent(a.label) + '">' + esc(a.label) +
+          '</a></td><td class="num">' + R.num(a.runs) + '</td>' + rateCell(a) + '</tr>';
+      }).join('') + '</tbody></table>';
+  }
+
+  function renderBreakdown(b) {
+    b = b || {};
+    const names = { platform: 'Platform', type: 'Type', os: 'OS' };
+    const label = function (dim, v) {
+      if (dim === 'platform') return R.platformName(v);
+      if (dim === 'type') return R.typeName(v);
+      return v;
+    };
+    $('breakdown').innerHTML = ['platform', 'type', 'os'].map(function (dim) {
+      const rows = b[dim] || [];
+      const total = rows.reduce(function (a, r) { return a + r.runs; }, 0) || 1;
+      return '<table class="compact"><thead><tr><th scope="col">' + names[dim] + '</th>' +
+        '<th scope="col" class="num">Runs</th><th scope="col" class="num">Share</th><th scope="col" class="num">Failure rate</th></tr></thead><tbody>' +
+        (rows.length ? rows.map(function (r) {
+          return '<tr><td>' + esc(label(dim, r.label)) + '</td><td class="num">' + R.num(r.runs) + '</td><td class="num"><span class="share"><span style="width:' +
+            (r.runs / total * 100).toFixed(1) + '%"></span></span>' + Math.round(r.runs / total * 100) + '%</td>' + rateCell(r) + '</tr>';
+        }).join('') : '<tr><td colspan="4" class="empty">No runs</td></tr>') + '</tbody></table>';
+    }).join('');
+  }
+
+  function renderDaily(d) {
+    const show = Number(state.days) > 1 && (d.daily_stats || []).length > 1;
+    $('dailySection').hidden = !show;
+    if (!show) return;
+    $('daily').innerHTML = R.columnsSVG(d.daily_stats, [
+      { key: 'success', cls: 'c-ok', name: 'successful' },
+      { key: 'failed', cls: 'c-bad', name: 'failed' },
+    ], { title: 'Runs per day', label: function (p) { return p.date.slice(5); } }) +
+      '<div class="legend"><span class="key c-ok"></span>Success <span class="key c-bad"></span>Failed</div>';
+  }
+
+  async function loadSlugs() {
+    try {
+      const data = await R.getJSON('/api/repo-slugs?days=' + encodeURIComponent(state.days) + '&repo=' + encodeURIComponent(state.repo));
+      const slugs = data.repo_slugs || [];
+      $('fSlug').innerHTML = '<option value="">All repositories</option>' + slugs.map(function (s) {
+        return '<option value="' + esc(s.slug) + '">' + esc(s.slug) + ' (' + R.num(s.count) + ')</option>';
+      }).join('');
+      $('fSlug').value = slugs.some(function (s) { return s.slug === state.slug; }) ? state.slug : '';
+    } catch (e) {
+      $('fSlug').innerHTML = '<option value="">All repositories</option>';
+    }
+  }
+
+  async function loadDashboard() {
+    const q = filterQuery();
+    const d = await R.getJSON('/api/dashboard?' + q.toString());
+    renderCards(d);
+    renderCauses(d.top_causes);
+    renderFailing(d.failing_apps, d.min_runs);
+    renderTopApps(d.apps);
+    renderBreakdown(d.breakdown);
+    renderDaily(d);
+    $('errorsLink').href = errorsURL();
+    const os = new Set();
+    (d.os_distribution || []).forEach(function (o) { if (o.os) os.add(o.os); });
+    $('logOS').innerHTML = '<option value="">All OS</option>' + Array.from(os).sort().map(function (o) {
+      return '<option value="' + esc(o) + '">' + esc(o) + '</option>';
+    }).join('');
+    $('logOS').value = state.os;
+  }
+
+  function causeLine(r) {
+    if (r.status === 'failed' || r.status === 'aborted') {
+      const h = R.headline(r);
+      return '<div class="cause-line' + (r.status === 'aborted' ? ' is-abort' : '') + '" title="' + esc(h) + '">' +
+        (r.exit_code ? '<span class="exit">' + r.exit_code + '</span>' : '') + esc(h) + '</div>';
+    }
+    if (r.status === 'unknown') {
+      return '<div class="cause-line is-silent">Stopped reporting after ' + esc(R.stageName(r.last_stage || 'installing').toLowerCase()) + '</div>';
+    }
+    return '';
+  }
+
+  function logRows(list) {
+    if (!list.length) return '<tr><td colspan="8" class="empty">No runs match these filters.</td></tr>';
+    return list.map(function (r, i) {
+      const plat = r.platform ? '<span class="platform-badge ' + esc(r.platform) + '">' + esc(r.platform === 'pve' ? 'PVE' : 'Incus') + '</span>' : '<span class="muted">unknown</span>';
+      return '<tr class="run-row status-' + esc(r.status) + '" data-run="' + i + '">' +
+        '<td>' + R.statusChip(r) + '</td>' +
+        '<td class="app-cell"><button type="button" class="run-open" data-run="' + i + '">' + esc(r.nsapp || 'unknown') + '</button> ' +
+        R.typeBadge(r.type) + causeLine(r) + '</td>' +
+        '<td>' + plat + '</td>' +
+        '<td class="repo-cell" title="' + esc(r.repo_slug || r.repo_source || '') + '">' + esc(r.repo_slug || r.repo_source || '') + '</td>' +
+        '<td class="os-cell">' + (esc(R.osName(r)) || '<span class="muted">unknown</span>') + '</td>' +
+        '<td class="nowrap">' + (esc(R.resources(r)) || '<span class="muted">unknown</span>') + '</td>' +
+        '<td class="nowrap" title="' + esc(r.started_at) + '">' + esc(R.dateTime(r.started_at)) + '</td>' +
+        '<td class="num nowrap">' + (r.status === 'in_progress' ? '<span class="muted">' + esc(R.duration(r.duration)) + ' so far</span>' : esc(R.duration(r.duration))) + '</td></tr>';
+    }).join('');
+  }
+
+  async function loadLog() {
+    const q = filterQuery();
+    q.set('page', state.page);
+    q.set('limit', state.limit);
+    q.set('sort', state.sort);
+    if (state.search) q.set('search', state.search);
+    if (state.status) q.set('status', state.status);
+    q.set('type', state.type || 'all');
+    if (state.os) q.set('os', state.os);
+    try {
+      const data = await R.getJSON('/api/records?' + q.toString());
+      records = data.records || [];
+      totalPages = Math.max(1, data.total_pages || 1);
+      $('logBody').innerHTML = logRows(records);
+      $('logInfo').textContent = 'Page ' + state.page + ' of ' + totalPages + ', ' + R.runs(data.total);
+      $('logPrev').disabled = state.page <= 1;
+      $('logNext').disabled = state.page >= totalPages;
+    } catch (e) {
+      $('logBody').innerHTML = '<tr><td colspan="8" class="empty">Could not load the log: ' + esc(e.message) + '</td></tr>';
+    }
+  }
+
+  async function refresh() {
+    writeURL();
+    syncControls();
+    $('refreshBtn').disabled = true;
+    try {
+      await loadSlugs();
+      await Promise.all([loadDashboard(), loadLog()]);
+      showError('');
+      $('updated').textContent = 'Updated ' + new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+    } catch (e) {
+      showError('Could not load the dashboard: ' + e.message);
+    } finally {
+      $('refreshBtn').disabled = false;
+    }
+  }
+
+  function exportCSV() {
+    const cols = ['started_at', 'nsapp', 'type', 'status', 'exit_code', 'error_message', 'platform', 'pve_version', 'os_type', 'os_version',
+      'core_count', 'ram_size', 'disk_size', 'duration', 'repo_slug', 'execution_id'];
+    const cell = function (v) {
+      const s = String(v == null ? '' : v);
+      return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    };
+    const csv = [cols.join(',')].concat(records.map(function (r) {
+      return cols.map(function (c) { return cell(c === 'error_message' ? R.headline(r) : r[c]); }).join(',');
+    })).join('\n');
+    R.download('telemetry-runs-' + new Date().toISOString().slice(0, 10) + '.csv', csv, 'text/csv');
+  }
+
+  function setAutoRefresh(on) {
+    try { localStorage.setItem('autoRefresh', String(on)); } catch (e) { /* storage unavailable */ }
+    if (timer) clearInterval(timer);
+    timer = on ? setInterval(refresh, 30000) : null;
+  }
+
+  function applyTheme(t) {
+    if (t === 'light') document.documentElement.setAttribute('data-theme', 'light');
+    else document.documentElement.removeAttribute('data-theme');
+    $('themeIcon').textContent = t === 'light' ? '☀️' : '🌙';
+  }
+
+  let searchTimer = null;
+  function bind() {
+    document.addEventListener('click', function (e) {
+      const t = e.target;
+      if (!t || !t.closest) return;
+      const segBtn = t.closest('.seg[data-filter] button');
+      if (segBtn) {
+        const key = segBtn.closest('.seg').getAttribute('data-filter');
+        state[key] = segBtn.getAttribute('data-value');
+        if (key === 'repo') state.slug = '';
+        state.page = 1;
+        refresh();
+        return;
+      }
+      const sortBtn = t.closest('.th-sort');
+      if (sortBtn) {
+        const f = sortBtn.getAttribute('data-sort');
+        state.sort = state.sort === '-' + f ? f : '-' + f;
+        state.page = 1;
+        writeURL();
+        syncControls();
+        loadLog();
+        return;
+      }
+      const row = t.closest('[data-run]');
+      if (row && !t.closest('a')) {
+        const rec = records[Number(row.getAttribute('data-run'))];
+        if (rec) R.openRecord(rec);
+      }
+    });
+    $('fSlug').addEventListener('change', function () { state.slug = this.value; state.page = 1; refresh(); });
+    $('refreshBtn').addEventListener('click', refresh);
+    $('csvBtn').addEventListener('click', exportCSV);
+    $('logSearch').addEventListener('input', function () {
+      const v = this.value.trim();
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(function () { state.search = v; state.page = 1; writeURL(); loadLog(); }, 300);
+    });
+    [['logStatus', 'status'], ['logType', 'type'], ['logOS', 'os']].forEach(function (p) {
+      $(p[0]).addEventListener('change', function () { state[p[1]] = this.value; state.page = 1; writeURL(); loadLog(); });
+    });
+    $('logLimit').addEventListener('change', function () { state.limit = Number(this.value); state.page = 1; loadLog(); });
+    $('logPrev').addEventListener('click', function () { if (state.page > 1) { state.page--; loadLog(); } });
+    $('logNext').addEventListener('click', function () { if (state.page < totalPages) { state.page++; loadLog(); } });
+    $('autoRefresh').addEventListener('change', function () { setAutoRefresh(this.checked); });
+    $('themeToggle').addEventListener('click', function () {
+      const next = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+      try { localStorage.setItem('theme', next); } catch (e) { /* storage unavailable */ }
+      applyTheme(next);
+    });
+  }
+
+  function init() {
+    let theme = 'dark', auto = false;
+    try { theme = localStorage.getItem('theme') || 'dark'; auto = localStorage.getItem('autoRefresh') === 'true'; } catch (e) { /* storage unavailable */ }
+    applyTheme(theme);
+    readURL();
+    bind();
+    $('autoRefresh').checked = auto;
+    setAutoRefresh(auto);
+    fetch('https://api.github.com/repos/community-scripts/ProxmoxVE').then(function (r) { return r.json(); }).then(function (d) {
+      if (d && d.stargazers_count) $('starCount').textContent = R.num(d.stargazers_count);
+    }).catch(function () { /* stars are decoration */ });
+    return refresh();
+  }
+
+  window.Dashboard = { init: init, state: state, records: function () { return records; } };
+  if (!window.__NO_AUTOSTART__) init();
+})();
