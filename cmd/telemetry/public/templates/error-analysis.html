@@ -8,13 +8,14 @@
     <link rel="icon" type="image/svg+xml" href="/static/img/logo.svg?v=cs-amber">
     <script src="/static/js/svg-inliner.js" defer></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/css/dashboard.css?v=5">
     <link rel="stylesheet" href="/static/css/error-analysis.css?v=4">
 </head>
 <body>
     <nav class="navbar">
-        <a href="/" class="navbar-brand">
+        <a href="https://community-scripts.github.io/ProxmoxVE/" class="navbar-brand" target="_blank" rel="noopener">
             <img width="28" height="28" src="/static/img/logo.svg?v=cs-amber" alt="" data-brand-logo>
             <span class="brand-name">Proxmox VE Helper-Scripts</span>
         </a>
@@ -22,6 +23,21 @@
             <a href="/" class="nav-link">Dashboard</a>
             <a href="/error-analysis" class="nav-link active" aria-current="page">Errors</a>
             <a href="/script-analysis" class="nav-link">Scripts</a>
+        </div>
+        <div class="navbar-actions">
+            <a href="https://github.com/community-scripts/ProxmoxVE" target="_blank" rel="noopener" class="github-stars" id="githubStars">
+                <img src="/static/img/star.svg" alt="">
+                <span id="starCount">-</span>
+            </a>
+            <a href="https://github.com/community-scripts/ProxmoxVE" target="_blank" rel="noopener" class="nav-icon" title="GitHub" aria-label="GitHub">
+                <img src="/static/img/github.svg" alt="">
+            </a>
+            <a href="https://discord.gg/2wvnMDgeFz" target="_blank" rel="noopener" class="nav-icon" title="Discord" aria-label="Discord">
+                <img src="/static/img/discord.svg" alt="">
+            </a>
+            <button type="button" class="theme-toggle nav-icon" id="themeToggle" title="Switch theme" aria-label="Switch theme">
+                <span id="themeIcon">🌙</span>
+            </button>
         </div>
     </nav>
 
@@ -190,7 +206,7 @@
         </form>
     </dialog>
 
-    <script src="/static/js/runs.js?v=1"></script>
-    <script src="/static/js/error-analysis.js?v=5"></script>
+    <script src="/static/js/runs.js?v=2"></script>
+    <script src="/static/js/error-analysis.js?v=6"></script>
 </body>
 </html>

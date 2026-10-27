@@ -776,7 +776,7 @@ func TestDashboardFiguresArePerRun(t *testing.T) {
 
 func TestScriptStatsCarryTheLastFailure(t *testing.T) {
 	ch, _ := newFakeCH(t)
-	data, err := ch.FetchScriptStats(context.Background(), 7, "", "", nil)
+	data, err := ch.FetchScriptStats(context.Background(), RunFilter{Days: 7}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -791,5 +791,29 @@ func TestScriptStatsCarryTheLastFailure(t *testing.T) {
 	}
 	if !found || len(data.RecentScripts) == 0 {
 		t.Errorf("scripts %+v", data.TopScripts)
+	}
+}
+
+func TestScriptDetailCountsTheRunsOfOneApp(t *testing.T) {
+	ch, _ := newFakeCH(t)
+	d, err := ch.FetchScriptDetail(context.Background(), RunFilter{Days: 7, App: "immich"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Total != 6 || d.Success != 1 || d.Failed != 5 || !d.FailingNow || d.Type != "lxc" || d.SetupsFailed == 0 {
+		t.Errorf("immich %+v", d)
+	}
+	if len(d.Causes) != 2 || d.Causes[0].Key != "npm ERR! code ENOSPC" || d.Causes[0].Failures != 3 {
+		t.Errorf("causes %+v", d.Causes)
+	}
+	if len(d.Recent) != 6 || len(d.Recent[0].Stages) == 0 || d.Bucket != "day" || len(d.Daily) != 7 {
+		t.Errorf("recent %d, stages %d, bucket %q, %d days", len(d.Recent), len(d.Recent[0].Stages), d.Bucket, len(d.Daily))
+	}
+	today, err := ch.FetchScriptDetail(context.Background(), RunFilter{Days: 1, App: "immich"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if today.Bucket != "hour" || len(today.Daily) == 0 || len(today.Daily) > 24 {
+		t.Errorf("today: bucket %q, %d points", today.Bucket, len(today.Daily))
 	}
 }

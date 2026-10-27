@@ -1,356 +1,466 @@
-let currentData = null;
-let expandTop = false;
-let expandBottom = false;
-let expandRecent = false;
-const LIMIT = 10;
+(function () {
+  'use strict';
+  const R = window.RunUI;
+  const esc = R.esc;
+  const $ = function (id) { return document.getElementById(id); };
 
-function escapeHtml(str) {
-  if (!str) return '';
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
+  const PAGE = 50;
+  const KEYS = ['days', 'repo', 'platform', 'slug', 'search', 'type', 'failing', 'sort', 'app'];
+  const DEFAULTS = { days: '1', repo: 'all', sort: '-total' };
+  const PERIODS = [['1', 'Today'], ['7', '7 days'], ['30', '30 days'], ['90', '90 days'], ['365', '1 year']];
+  const OUTCOMES = [['success', 'c-ok', 'successful'], ['failed', 'c-bad', 'failed'], ['aborted', 'c-abort', 'aborted'],
+    ['no_result', 'c-silent', 'without result'], ['installing', 'c-running', 'running']];
 
-function formatTimestamp(ts) {
-  if (!ts) return '-';
-  return new Date(ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
-}
+  const state = { days: '1', repo: 'all', platform: '', slug: '', search: '', type: '', failing: '', sort: '-total', app: '', all: false };
+  let data = null;
+  let ranks = {};
+  let rows = [];
+  let detail = null;
+  let detailDays = '1';
+  let detailSeq = 0;
 
-function platformBadge(p) {
-  if (p === 'incus') return '<span class="platform-badge incus" title="Incus host">INCUS</span>';
-  if (p === 'pve') return '<span class="platform-badge pve" title="Proxmox VE host">PVE</span>';
-  return '<span class="platform-badge unknown">—</span>';
-}
-
-async function fetchData() {
-  // Default: today, ALL sources (repo filter is optional)
-  const days = document.querySelector('.filter-btn.active')?.dataset.days || '1';
-  const repo = document.querySelector('.source-btn.active')?.dataset.repo || 'all';
-  const platform = document.querySelector('.platform-btn.active')?.dataset.platform || '';
-  try {
-    let url = '/api/scripts?days=' + days + '&repo=' + encodeURIComponent(repo);
-    if (platform) url += '&platform=' + encodeURIComponent(platform);
-    const resp = await fetch(url);
-    if (!resp.ok) throw new Error('Fetch failed');
-    return await resp.json();
-  } catch (e) {
-    console.error('Fetch error:', e);
-    return null;
+  function readURL() {
+    const q = new URLSearchParams(location.search);
+    KEYS.forEach(function (k) { if (q.has(k)) state[k] = q.get(k); });
   }
-}
-
-function updateStats(data) {
-  document.getElementById('totalInstalls').textContent = (data.total_installs || 0).toLocaleString();
-  document.getElementById('uniqueScripts').textContent = (data.total_scripts || 0).toLocaleString();
-  const avg = data.total_scripts > 0 ? (data.total_installs / data.total_scripts).toFixed(1) : '0';
-  document.getElementById('avgInstalls').textContent = avg;
-}
-
-// Failure rate is failed / (success + failed); the last failure shows its message.
-function scriptRow(s, rank) {
-  const typeClass = (s.type || '').toLowerCase();
-  const finished = s.success + s.failed;
-  const rate = s.failure_rate || 0;
-  const rateColor = rate >= 30 ? 'var(--accent-red)' : rate >= 10 ? 'var(--accent-yellow)' : 'var(--accent-green)';
-  const total = s.success + s.failed + s.aborted + s.installing;
-  const pctSuccess = total > 0 ? (s.success / total * 100) : 0;
-  const pctFailed = total > 0 ? (s.failed / total * 100) : 0;
-  const pctAborted = total > 0 ? (s.aborted / total * 100) : 0;
-  const pctInstalling = total > 0 ? (s.installing / total * 100) : 0;
-  const ipd = (s.installs_per_day || 0).toFixed(2);
-  const ipdColor = s.installs_per_day >= 10 ? 'var(--accent-green)' : s.installs_per_day >= 1 ? 'var(--accent-cyan)' : 'var(--text-muted)';
-  const cause = s.last_failure_cause
-    ? '<a href="/error-analysis?app=' + encodeURIComponent(s.app) + '" onclick="event.stopPropagation()" title="' + escapeHtml(s.last_failure_cause) + '">' + escapeHtml(s.last_failure_cause) + '</a>'
-    : '<span style="color:var(--text-muted);">none</span>';
-  return '<tr' + scriptRowAttrs(s.app) + '>' +
-    '<td style="color:var(--text-muted);font-weight:600;">' + rank + '</td>' +
-    '<td><strong>' + escapeHtml(s.app) + '</strong></td>' +
-    '<td><span class="type-badge ' + typeClass + '">' + (s.type || '-').toUpperCase() + '</span></td>' +
-    '<td style="font-weight:600;">' + s.total.toLocaleString() + '</td>' +
-    '<td style="color:var(--accent-green);">' + s.success.toLocaleString() + '</td>' +
-    '<td style="color:var(--accent-red);">' + s.failed.toLocaleString() + '</td>' +
-    '<td style="color:var(--accent-purple);">' + s.aborted.toLocaleString() + '</td>' +
-    '<td style="color:var(--accent-yellow);">' + s.installing.toLocaleString() + '</td>' +
-    '<td style="color:' + rateColor + ';font-weight:600;">' + (finished ? rate.toFixed(1) + '%' : '<span style="color:var(--text-muted);font-weight:400;">none finished</span>') + '</td>' +
-    '<td class="last-cause">' + cause + '</td>' +
-    '<td style="color:' + ipdColor + ';font-weight:600;">' + ipd + '</td>' +
-    '<td><div class="success-bar">' +
-    '<div class="seg-success" style="width:' + pctSuccess + '%"></div>' +
-    '<div class="seg-failed" style="width:' + pctFailed + '%"></div>' +
-    '<div class="seg-aborted" style="width:' + pctAborted + '%"></div>' +
-    '<div class="seg-installing" style="width:' + pctInstalling + '%"></div>' +
-    '</div></td>' +
-    '</tr>';
-}
-
-function renderTopTable() {
-  const tbody = document.getElementById('topTableBody');
-  if (!currentData || !currentData.top_scripts) {
-    tbody.innerHTML = '<tr><td colspan="12" style="text-align:center;color:var(--text-muted);padding:24px;">No data</td></tr>';
-    return;
+  function writeURL() {
+    const q = new URLSearchParams();
+    KEYS.forEach(function (k) { if (state[k] && state[k] !== DEFAULTS[k]) q.set(k, state[k]); });
+    const s = q.toString();
+    history.replaceState(null, '', location.pathname + (s ? '?' + s : ''));
   }
-  const search = (document.getElementById('searchTop').value || '').toLowerCase();
-  let scripts = currentData.top_scripts;
-  if (search) {
-    scripts = scripts.filter(s => s.app.toLowerCase().includes(search) || (s.type || '').toLowerCase().includes(search));
+  function filterQuery(days) {
+    const q = new URLSearchParams({ days: days || state.days, repo: state.repo });
+    if (state.platform) q.set('platform', state.platform);
+    if (state.slug) q.set('slug', state.slug);
+    return q;
   }
-  const limit = expandTop ? scripts.length : Math.min(LIMIT, scripts.length);
-  const shown = scripts.slice(0, limit);
-
-  tbody.innerHTML = shown.map((s, idx) => scriptRow(s, idx + 1)).join('');
-
-  document.getElementById('expandTopBtn').textContent = expandTop ? 'Show Top 10' : 'Show All (' + scripts.length + ')';
-}
-
-function renderBottomTable() {
-  const tbody = document.getElementById('bottomTableBody');
-  if (!currentData || !currentData.top_scripts) {
-    tbody.innerHTML = '<tr><td colspan="12" style="text-align:center;color:var(--text-muted);padding:24px;">No data</td></tr>';
-    return;
+  function periodName(days) {
+    return days === '1' ? 'today' : days === '365' ? 'in the last year' : 'in the last ' + days + ' days';
   }
-  const search = (document.getElementById('searchBottom').value || '').toLowerCase();
-  // Reverse: least used first
-  let scripts = [...currentData.top_scripts].reverse();
-  if (search) {
-    scripts = scripts.filter(s => s.app.toLowerCase().includes(search) || (s.type || '').toLowerCase().includes(search));
+
+  function syncControls() {
+    document.querySelectorAll('.seg[data-filter]').forEach(function (seg) {
+      const key = seg.getAttribute('data-filter');
+      seg.querySelectorAll('button').forEach(function (b) {
+        b.setAttribute('aria-pressed', String(b.getAttribute('data-value') === state[key]));
+      });
+    });
+    $('fSearch').value = state.search;
+    $('fType').value = state.type;
+    $('fFailing').checked = state.failing === '1';
+    document.querySelectorAll('.th-sort[data-ssort]').forEach(function (b) {
+      const f = b.getAttribute('data-ssort');
+      const dir = state.sort === f ? 'ascending' : state.sort === '-' + f ? 'descending' : '';
+      if (dir) b.setAttribute('aria-sort', dir); else b.removeAttribute('aria-sort');
+    });
   }
-  const limit = expandBottom ? scripts.length : Math.min(LIMIT, scripts.length);
-  const shown = scripts.slice(0, limit);
-  const totalScripts = currentData.top_scripts.length;
 
-  tbody.innerHTML = shown.map((s, idx) => scriptRow(s, totalScripts - idx)).join('');
-
-  document.getElementById('expandBottomBtn').textContent = expandBottom ? 'Show Bottom 10' : 'Show All (' + scripts.length + ')';
-}
-
-function renderRecentTable() {
-  const tbody = document.getElementById('recentTableBody');
-  if (!currentData || !currentData.recent_scripts) {
-    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--text-muted);padding:24px;">No data</td></tr>';
-    return;
+  function showError(msg) {
+    const b = $('errorBanner');
+    b.textContent = msg;
+    b.hidden = !msg;
   }
-  const search = (document.getElementById('searchRecent').value || '').toLowerCase();
-  let scripts = currentData.recent_scripts;
-  if (search) {
-    scripts = scripts.filter(s => s.app.toLowerCase().includes(search) || (s.status || '').toLowerCase().includes(search) || (s.type || '').toLowerCase().includes(search));
+
+  function card(label, value, sub, cls) {
+    return '<div class="card ' + (cls || '') + '"><div class="card-label">' + esc(label) + '</div>' +
+      '<div class="card-value">' + value + '</div><div class="card-sub">' + sub + '</div></div>';
   }
-  const limit = expandRecent ? scripts.length : Math.min(LIMIT, scripts.length);
-  const shown = scripts.slice(0, limit);
 
-  tbody.innerHTML = shown.map(s => {
-    const typeClass = (s.type || '').toLowerCase();
-    const statusClass = s.status || 'unknown';
-    const codeClass = s.exit_code === 0 ? 'ok' : 'err';
-    const os = s.os_type ? s.os_type + (s.os_version ? ' ' + s.os_version : '') : '-';
-    return '<tr>' +
-      '<td><strong>' + escapeHtml(s.app) + '</strong></td>' +
-      '<td><span class="type-badge ' + typeClass + '">' + (s.type || '-').toUpperCase() + '</span></td>' +
-      '<td>' + platformBadge(s.platform) + '</td>' +
-      '<td><span class="status-badge ' + statusClass + '">' + escapeHtml(s.status) + '</span></td>' +
-      '<td><span class="exit-code ' + codeClass + '">' + s.exit_code + '</span></td>' +
-      '<td>' + escapeHtml(os) + '</td>' +
-      '<td>' + escapeHtml(s.pve_version || '-') + '</td>' +
-      '<td>' + escapeHtml(s.method || '-') + '</td>' +
-      '<td style="white-space:nowrap;">' + formatTimestamp(s.created) + '</td>' +
-      '</tr>';
-  }).join('');
-
-  document.getElementById('expandRecentBtn').textContent = expandRecent ? 'Show Last 10' : 'Show All (' + scripts.length + ')';
-}
-
-// ── Per-script drill-down (daily chart + errors + recent installs) ──
-let detailChart = null;
-
-function scriptRowAttrs(app) {
-  return ' class="clickable-row" style="cursor:pointer;" onclick="openScriptDetail(\'' + escapeHtml(app).replace(/'/g, "\\'") + '\')"';
-}
-
-async function openScriptDetail(app) {
-  const modal = document.getElementById('scriptDetailModal');
-  const body = document.getElementById('scriptDetailBody');
-  document.getElementById('scriptDetailTitle').textContent = app;
-  body.innerHTML = '<div class="loading" style="padding:40px;text-align:center;color:var(--text-muted);">Loading ' + escapeHtml(app) + '…</div>';
-  modal.classList.add('active');
-
-  // Drill-down window: per-day analysis needs a real range.
-  // Today → 30d, All Time → 90d, otherwise the page period.
-  const pageDays = parseInt(document.querySelector('.filter-btn.active')?.dataset.days || '30', 10);
-  const days = pageDays === 0 ? 90 : (pageDays < 7 ? 30 : pageDays);
-  const repo = document.querySelector('.source-btn.active')?.dataset.repo || 'all';
-  const platform = document.querySelector('.platform-btn.active')?.dataset.platform || '';
-
-  try {
-    let url = '/api/script-detail?app=' + encodeURIComponent(app) + '&days=' + days + '&repo=' + encodeURIComponent(repo);
-    if (platform) url += '&platform=' + encodeURIComponent(platform);
-    const resp = await fetch(url);
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
-    renderScriptDetail(await resp.json(), days);
-  } catch (e) {
-    body.innerHTML = '<div style="padding:24px;color:var(--accent-red);">Failed to load: ' + escapeHtml(e.message) + '</div>';
+  function renderCards() {
+    const list = data.top_scripts || [];
+    let ok = 0, bad = 0, failing = 0;
+    list.forEach(function (s) {
+      ok += s.success;
+      bad += s.failed;
+      if (s.failing_now) failing++;
+    });
+    const finished = ok + bad;
+    const avg = list.length ? data.total_installs / list.length : 0;
+    $('cards').innerHTML =
+      card('Scripts', R.num(list.length), 'with at least one run') +
+      card('Runs', R.num(data.total_installs), avg.toFixed(1) + ' per script on average') +
+      card('Failure rate', finished ? R.pct(bad / finished * 100) : 'No data', R.num(bad) + ' of ' + R.num(finished) + ' finished runs failed', 'bad') +
+      card('Failing now', R.num(failing), 'last failure is newer than the last success', 'bad');
   }
-}
 
-function closeScriptDetail() {
-  document.getElementById('scriptDetailModal').classList.remove('active');
-  if (detailChart) { detailChart.destroy(); detailChart = null; }
-}
+  function sortValue(s, f) {
+    if (f === 'app') return s.app.toLowerCase();
+    if (f === 'last_failure') return s.last_failure || '';
+    if (f === 'failure_rate') return s.success + s.failed ? s.failure_rate : -1;
+    return Number(s[f]) || 0;
+  }
+  function sorted(list) {
+    const desc = state.sort.charAt(0) === '-';
+    const f = desc ? state.sort.slice(1) : state.sort;
+    return list.slice().sort(function (a, b) {
+      const x = sortValue(a, f), y = sortValue(b, f);
+      if (x < y) return desc ? 1 : -1;
+      if (x > y) return desc ? -1 : 1;
+      return (ranks[a.app] || 0) - (ranks[b.app] || 0);
+    });
+  }
+  function matches(s) {
+    if (state.search && s.app.toLowerCase().indexOf(state.search.toLowerCase()) === -1) return false;
+    if (state.type === 'pve' && s.type !== 'pve' && s.type !== 'tool') return false;
+    if (state.type && state.type !== 'pve' && s.type !== state.type) return false;
+    return state.failing !== '1' || s.failing_now;
+  }
 
-function renderScriptDetail(d, days) {
-  const body = document.getElementById('scriptDetailBody');
-  const rate = (d.success_rate || 0).toFixed(1);
-  const rateColor = d.success_rate >= 90 ? 'var(--accent-green)' : d.success_rate >= 70 ? 'var(--accent-yellow)' : 'var(--accent-red)';
-  const avgDur = d.avg_duration ? Math.round(d.avg_duration) : 0;
-  const avgDurStr = avgDur ? (avgDur < 60 ? avgDur + 's' : Math.floor(avgDur / 60) + 'm ' + (avgDur % 60) + 's') : '—';
+  function rateCell(r) {
+    if (!(r.success + r.failed)) return '<td class="num muted">none finished</td>';
+    const sev = r.failure_rate >= 30 ? 'bad' : r.failure_rate >= 15 ? 'warn' : '';
+    return '<td class="num strong ' + sev + '">' + R.pct(r.failure_rate) + '</td>';
+  }
 
-  let html = '';
+  function outcomeBar(s) {
+    const total = OUTCOMES.reduce(function (a, o) { return a + (s[o[0]] || 0); }, 0);
+    if (!total) return '';
+    const label = OUTCOMES.filter(function (o) { return s[o[0]]; }).map(function (o) { return R.num(s[o[0]]) + ' ' + o[2]; }).join(', ');
+    return '<div class="outcome-bar" role="img" aria-label="' + esc(label) + '" title="' + esc(label) + '">' +
+      OUTCOMES.map(function (o) {
+        return s[o[0]] ? '<span class="' + o[1] + '" style="width:' + (s[o[0]] / total * 100).toFixed(1) + '%"></span>' : '';
+      }).join('') + '</div>';
+  }
 
-  // Summary chips
-  html += '<div class="sd-chips">';
-  html += '<span class="type-badge ' + (d.type || '').toLowerCase() + '">' + (d.type || '-').toUpperCase() + '</span>';
-  html += '<div class="sd-chip"><span class="sd-label">Installs (' + days + 'd)</span><strong>' + (d.total || 0).toLocaleString() + '</strong></div>';
-  html += '<div class="sd-chip"><span class="sd-label">Success Rate</span><strong style="color:' + rateColor + ';">' + rate + '%</strong></div>';
-  html += '<div class="sd-chip"><span class="sd-label">Failed</span><strong style="color:var(--accent-red);">' + (d.failed || 0).toLocaleString() + '</strong></div>';
-  html += '<div class="sd-chip"><span class="sd-label">Aborted</span><strong style="color:var(--accent-purple);">' + (d.aborted || 0).toLocaleString() + '</strong></div>';
-  html += '<div class="sd-chip"><span class="sd-label">Ø Duration</span><strong>' + avgDurStr + '</strong></div>';
-  (d.platform_stats || []).forEach(p => {
-    if (p.platform !== 'unknown') {
-      html += '<div class="sd-chip">' + platformBadge(p.platform) + '<strong>' + p.count.toLocaleString() + '</strong></div>';
+  function failingChip(failingNow) {
+    return failingNow
+      ? '<span class="chip chip-failed" title="The last failure is newer than the last success">Failing</span>'
+      : '<span class="chip chip-success" title="A successful run came after the last failure">Recovered</span>';
+  }
+
+  function lastFailure(s) {
+    if (!s.last_failure) return '<span class="muted">none</span>';
+    return '<span title="' + esc(R.dateTime(s.last_failure)) + '">' + esc(R.ago(s.last_failure)) + '</span>' +
+      (s.failing_now ? ' ' + failingChip(true) : '');
+  }
+
+  function muted(n) { return n ? '' : ' muted'; }
+
+  function scriptRow(s, i) {
+    const cause = s.failed && s.last_failure_cause
+      ? '<div class="cause-line" title="' + esc(s.last_failure_cause) + '">' + esc(s.last_failure_cause) + '</div>' : '';
+    return '<tr class="script-row" data-script="' + i + '">' +
+      '<td class="num muted">' + (ranks[s.app] || '') + '</td>' +
+      '<td class="app-cell"><button type="button" class="run-open" data-script="' + i + '">' + esc(s.app) + '</button> ' +
+      R.typeBadge(s.type) + cause + '</td>' +
+      '<td class="num strong">' + R.num(s.total) + '</td>' +
+      '<td class="num' + muted(s.success) + '">' + R.num(s.success) + '</td>' +
+      '<td class="num' + (s.failed ? ' bad' : ' muted') + '">' + R.num(s.failed) + '</td>' +
+      '<td class="num' + muted(s.aborted) + '">' + R.num(s.aborted) + '</td>' +
+      '<td class="num' + muted(s.no_result) + '">' + R.num(s.no_result) + '</td>' +
+      rateCell(s) +
+      '<td class="num' + muted(s.setups_failed) + '">' + R.num(s.setups_failed) + '</td>' +
+      '<td class="nowrap">' + lastFailure(s) + '</td>' +
+      '<td>' + outcomeBar(s) + '</td></tr>';
+  }
+
+  function renderTable() {
+    const list = data ? data.top_scripts || [] : [];
+    const filtered = sorted(list.filter(matches));
+    rows = state.all ? filtered : filtered.slice(0, PAGE);
+    $('scriptsBody').innerHTML = rows.length ? rows.map(scriptRow).join('')
+      : '<tr><td colspan="11" class="empty">' + (list.length ? 'No script matches these filters.' : 'No script ran in this period.') + '</td></tr>';
+    $('scriptsInfo').textContent = 'Showing ' + R.num(rows.length) + ' of ' + R.num(filtered.length) + (filtered.length === 1 ? ' script' : ' scripts');
+    $('showAll').hidden = filtered.length <= PAGE;
+    $('showAll').textContent = state.all ? 'Show the first ' + PAGE : 'Show all ' + R.num(filtered.length);
+  }
+
+  async function loadSlugs() {
+    try {
+      const res = await R.getJSON('/api/repo-slugs?days=' + encodeURIComponent(state.days) + '&repo=' + encodeURIComponent(state.repo));
+      const slugs = res.repo_slugs || [];
+      $('fSlug').innerHTML = '<option value="">All repositories</option>' + slugs.map(function (s) {
+        return '<option value="' + esc(s.slug) + '">' + esc(s.slug) + ' (' + R.num(s.count) + ')</option>';
+      }).join('');
+      $('fSlug').value = slugs.some(function (s) { return s.slug === state.slug; }) ? state.slug : '';
+    } catch (e) {
+      $('fSlug').innerHTML = '<option value="">All repositories</option>';
     }
-  });
-  html += '</div>';
-
-  // Daily chart
-  html += '<div class="sd-section"><h3>Installations per Day</h3><div style="height:220px;"><canvas id="sdDailyChart"></canvas></div></div>';
-
-  // Two-column: exit codes + OS
-  html += '<div class="sd-grid">';
-  html += '<div class="sd-section"><h3>Top Exit Codes</h3>';
-  if (d.exit_codes && d.exit_codes.length) {
-    html += '<table class="sd-table"><thead><tr><th>Code</th><th>Description</th><th>Count</th></tr></thead><tbody>';
-    d.exit_codes.forEach(ec => {
-      html += '<tr><td><span class="exit-code err">' + ec.exit_code + '</span></td><td>' + escapeHtml(ec.description) + '</td><td><strong>' + ec.count + '</strong></td></tr>';
-    });
-    html += '</tbody></table>';
-  } else {
-    html += '<div class="sd-empty">No failures in this period 🎉</div>';
   }
-  html += '</div>';
-  html += '<div class="sd-section"><h3>OS Distribution</h3>';
-  if (d.os_distribution && d.os_distribution.length) {
-    const osMax = Math.max(...d.os_distribution.map(o => o.count));
-    d.os_distribution.forEach(o => {
-      const w = (o.count / osMax * 100).toFixed(0);
-      html += '<div class="sd-bar-row"><span class="sd-bar-label">' + escapeHtml(o.os) + '</span>' +
-        '<div class="sd-bar"><div class="sd-bar-fill" style="width:' + w + '%"></div></div>' +
-        '<span class="sd-bar-count">' + o.count.toLocaleString() + '</span></div>';
-    });
-  } else {
-    html += '<div class="sd-empty">No OS data</div>';
+
+  async function load() {
+    writeURL();
+    syncControls();
+    $('refreshBtn').disabled = true;
+    try {
+      await loadSlugs();
+      const q = filterQuery().toString();
+      $('apiLink').href = '/api/scripts?' + q;
+      data = await R.getJSON('/api/scripts?' + q);
+      ranks = {};
+      (data.top_scripts || []).forEach(function (s, i) { ranks[s.app] = i + 1; });
+      renderCards();
+      renderTable();
+      showError('');
+      $('updated').textContent = 'Updated ' + new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+    } catch (e) {
+      showError('Could not load the scripts: ' + e.message);
+    } finally {
+      $('refreshBtn').disabled = false;
+    }
   }
-  html += '</div></div>';
 
-  // Recent installations
-  html += '<div class="sd-section"><h3>Recent Installations</h3>';
-  if (d.recent && d.recent.length) {
-    html += '<table class="sd-table"><thead><tr><th>Status</th><th>Platform</th><th>Exit</th><th>Error</th><th>OS</th><th>Duration</th><th>Time</th></tr></thead><tbody>';
-    d.recent.forEach(r => {
-      const dur = r.install_duration ? (r.install_duration < 60 ? r.install_duration + 's' : Math.floor(r.install_duration / 60) + 'm') : '-';
-      const os = r.os_type ? r.os_type + (r.os_version ? ' ' + r.os_version : '') : '-';
-      html += '<tr>' +
-        '<td><span class="status-badge ' + (r.status || 'unknown') + '">' + escapeHtml(r.status) + '</span></td>' +
-        '<td>' + platformBadge(r.platform) + '</td>' +
-        '<td>' + (r.exit_code ? '<span class="exit-code err">' + r.exit_code + '</span>' : '<span class="exit-code ok">0</span>') + '</td>' +
-        '<td style="max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escapeHtml([r.error_message, r.error_step].filter(Boolean).join(' — ')) + '">' + escapeHtml(r.error_message || '-') + '</td>' +
-        '<td>' + escapeHtml(os) + '</td>' +
-        '<td>' + dur + '</td>' +
-        '<td style="white-space:nowrap;">' + formatTimestamp(r.created) + '</td>' +
-        '</tr>';
-    });
-    html += '</tbody></table>';
-  } else {
-    html += '<div class="sd-empty">No installations in this period</div>';
+  // Script detail dialog
+
+  function detailQuery() {
+    const q = filterQuery(detailDays);
+    q.set('app', state.app);
+    return q;
   }
-  html += '</div>';
 
-  body.innerHTML = html;
+  function detailHead(app, d) {
+    const errs = filterQuery(detailDays);
+    errs.set('type', 'all');
+    errs.set('app', app);
+    const log = filterQuery(detailDays);
+    log.set('search', app);
+    return '<header class="rd-head"><div class="rd-title"><h2 id="scriptTitle">' + esc(app) + '</h2>' +
+      (d ? R.typeBadge(d.type) + (d.failed ? failingChip(d.failing_now) : '') : '') + '</div>' +
+      '<div class="sd-controls"><div class="seg" data-dfilter="days" role="group" aria-label="Period">' +
+      PERIODS.map(function (p) {
+        return '<button type="button" data-value="' + p[0] + '" aria-pressed="' + (p[0] === detailDays) + '">' + p[1] + '</button>';
+      }).join('') + '</div><div class="rd-actions">' +
+      '<a class="btn" href="/error-analysis?' + esc(errs.toString()) + '">Error analysis</a>' +
+      '<a class="btn" href="/?' + esc(log.toString()) + '">Installation log</a>' +
+      (d ? '<button type="button" class="btn" data-sd="markdown">Copy as Markdown</button>' : '') +
+      '<a class="btn" href="/api/script-detail?' + esc(detailQuery().toString()) + '">JSON</a>' +
+      '</div></div></header>';
+  }
 
-  // Render the stacked daily chart
-  const daily = d.daily || [];
-  if (detailChart) detailChart.destroy();
-  if (typeof Chart !== 'undefined' && daily.length) {
-    detailChart = new Chart(document.getElementById('sdDailyChart'), {
-      type: 'bar',
-      data: {
-        labels: daily.map(x => x.date.slice(5)),
-        datasets: [
-          { label: 'Success', data: daily.map(x => x.success), backgroundColor: '#22c55e', stack: 's' },
-          { label: 'Failed', data: daily.map(x => x.failed), backgroundColor: '#ef4444', stack: 's' },
-          { label: 'Aborted', data: daily.map(x => x.aborted), backgroundColor: '#a855f7', stack: 's' }
-        ]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: { legend: { labels: { color: '#8b949e', usePointStyle: true } } },
-        scales: {
-          x: { stacked: true, ticks: { color: '#8b949e', maxRotation: 45 }, grid: { display: false } },
-          y: { stacked: true, beginAtZero: true, ticks: { color: '#8b949e', precision: 0 }, grid: { color: '#2d3748' } }
-        }
+  function stat(label, value, cls) {
+    return '<div class="' + (cls || '') + '"><dt>' + esc(label) + '</dt><dd>' + value + '</dd></div>';
+  }
+
+  function lastSeen(d) {
+    const parts = [];
+    if (d.last_failure) parts.push('last failure ' + R.ago(d.last_failure) + ' (' + R.dateTime(d.last_failure) + ')');
+    if (d.last_success) parts.push('last success ' + R.ago(d.last_success) + ' (' + R.dateTime(d.last_success) + ')');
+    if (!parts.length) return '';
+    const text = parts.join(', ');
+    return '<p class="sd-note">' + esc(text.charAt(0).toUpperCase() + text.slice(1)) + '.</p>';
+  }
+
+  function hourLabel(t) {
+    const d = R.parseTime(t);
+    return d ? d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : '';
+  }
+
+  function resultLine(r) {
+    if (r.status === 'failed' || r.status === 'aborted') {
+      const h = R.headline(r);
+      return '<div class="cause-line' + (r.status === 'aborted' ? ' is-abort' : '') + '" title="' + esc(h) + '">' +
+        (r.exit_code ? '<span class="exit">' + r.exit_code + '</span>' : '') + esc(h) + '</div>';
+    }
+    if (r.status === 'unknown') {
+      return '<div class="cause-line is-silent">Stopped reporting after ' + esc(R.stageName(r.last_stage || 'installing').toLowerCase()) + '</div>';
+    }
+    return '';
+  }
+
+  function breakdownTable(name, list, label) {
+    list = list || [];
+    return '<div class="sd-table table-wrapper"><table class="compact"><thead><tr><th scope="col">' + esc(name) + '</th>' +
+      '<th scope="col" class="num">Runs</th><th scope="col" class="num">Failure rate</th></tr></thead><tbody>' +
+      (list.length ? list.map(function (r) {
+        return '<tr><td>' + esc(label(r.label)) + '</td><td class="num">' + R.num(r.runs) + '</td>' + rateCell(r) + '</tr>';
+      }).join('') : '<tr><td colspan="3" class="empty">Not reported</td></tr>') + '</tbody></table></div>';
+  }
+
+  function detailHTML(d) {
+    let html = detailHead(d.app, d);
+    if (!d.total) return html + '<p class="empty">' + esc(d.app) + ' did not run ' + esc(periodName(detailDays)) + '.</p>';
+    const finished = d.success + d.failed;
+    html += '<dl class="sd-stats">' +
+      stat('Runs', R.num(d.total)) +
+      stat('Success rate', finished ? R.pct(d.success_rate) : 'none finished', 'ok') +
+      stat('Failed', R.num(d.failed), 'bad') +
+      stat('Aborted', R.num(d.aborted), 'abort') +
+      stat('No result', R.num(d.no_result), 'silent') +
+      stat('Running', R.num(d.in_progress)) +
+      stat('Failed setups', R.num(d.setups_failed)) +
+      stat('Avg. success', d.avg_duration ? R.duration(d.avg_duration) : 'none') + '</dl>';
+    html += lastSeen(d);
+
+    const hourly = d.bucket === 'hour';
+    html += '<section class="rd-section"><h3>' + (hourly ? 'Runs per hour today' : 'Runs per day') + '</h3>' +
+      R.columnsSVG(d.daily || [], [
+        { key: 'success', cls: 'c-ok', name: 'successful' },
+        { key: 'failed', cls: 'c-bad', name: 'failed' },
+        { key: 'aborted', cls: 'c-abort', name: 'aborted' },
+      ], { title: 'Runs of ' + d.app, label: function (p) { return hourly ? hourLabel(p.date) : p.date.slice(5); } }) +
+      '<div class="legend"><span class="key c-ok"></span>Success <span class="key c-bad"></span>Failed <span class="key c-abort"></span>Aborted</div></section>';
+
+    const causes = d.causes || [];
+    html += '<section class="rd-section"><h3>What fails</h3>';
+    if (!causes.length) {
+      html += '<p class="muted">No failed runs ' + esc(periodName(detailDays)) + '.</p>';
+    } else {
+      html += '<div class="sd-table table-wrapper"><table class="compact"><thead><tr><th scope="col">Cause</th><th scope="col" class="num">Failures</th>' +
+        '<th scope="col" class="num">Setups</th><th scope="col">Last seen</th><th scope="col" class="num">Last 24 h</th></tr></thead><tbody>' +
+        causes.map(function (c) {
+          const u = filterQuery(detailDays);
+          u.set('type', 'all');
+          u.set('cause', c.key);
+          return '<tr><td class="cause-cell"><a class="cause-link' + (c.kind === 'command' ? ' is-code' : '') + '" href="/error-analysis?' + esc(u.toString()) +
+            '" title="' + esc(c.message) + '">' + esc(c.message) + '</a><div class="cause-meta">Exit ' + c.exit_code + ': ' + esc(c.exit_description) +
+            (c.category ? ', ' + esc(c.category) : '') + '</div></td>' +
+            '<td class="num strong bad">' + R.num(c.failures) + '</td><td class="num">' + R.num(c.setups) + '</td>' +
+            '<td class="nowrap" title="' + esc(R.dateTime(c.last_seen)) + '">' + esc(R.ago(c.last_seen)) + '</td><td class="num">' + R.trend(c) + '</td></tr>';
+        }).join('') + '</tbody></table></div>';
+    }
+    html += '</section>';
+
+    const recent = d.recent || [];
+    html += '<section class="rd-section"><h3>Recent runs</h3>';
+    if (!recent.length) {
+      html += '<p class="muted">No runs ' + esc(periodName(detailDays)) + '.</p>';
+    } else {
+      html += '<div class="sd-table table-wrapper"><table class="compact runs"><thead><tr><th scope="col">Started</th><th scope="col">Status</th>' +
+        '<th scope="col">Result</th><th scope="col" class="num">Duration</th><th scope="col">Host</th><th scope="col">OS</th></tr></thead><tbody>' +
+        recent.map(function (r, i) {
+          return '<tr class="srun-row" data-srun="' + i + '"><td class="nowrap"><button type="button" class="run-open" data-srun="' + i + '">' +
+            esc(R.dateTime(r.started_at)) + '</button></td><td>' + R.statusChip(r) + '</td><td class="result-cell">' + resultLine(r) + '</td>' +
+            '<td class="num nowrap">' + esc(R.duration(r.duration)) + '</td><td class="nowrap">' + (esc(R.hostName(r)) || '<span class="muted">unknown</span>') +
+            '</td><td class="nowrap">' + (esc(R.osName(r)) || '<span class="muted">unknown</span>') + '</td></tr>';
+        }).join('') + '</tbody></table></div>';
+    }
+    html += '</section>';
+
+    const b = d.breakdown || {};
+    html += '<section class="rd-section sd-split">' + breakdownTable('Platform', b.platform, R.platformName) +
+      breakdownTable('OS', b.os, String) + '</section>';
+    return html;
+  }
+
+  function detailMarkdown() {
+    const d = detail;
+    if (!d) return '';
+    const finished = d.success + d.failed;
+    let md = '## ' + d.app + ' (' + R.typeName(d.type) + '), ' + periodName(detailDays) + '\n\n';
+    md += [
+      'Runs: ' + d.total + ' (' + d.success + ' successful, ' + d.failed + ' failed, ' + d.aborted + ' aborted, ' +
+        d.no_result + ' without result, ' + d.in_progress + ' running)',
+      'Failure rate: ' + (finished ? R.pct(d.failure_rate) + ' of ' + finished + ' finished runs' : 'no finished runs'),
+      d.failed ? 'Failing now: ' + (d.failing_now ? 'yes' : 'no') + ' (last failure ' + d.last_failure +
+        (d.last_success ? ', last success ' + d.last_success : ', no success') + ')' : '',
+      d.failed ? 'Failed setups: ' + d.setups_failed + ' distinct hardware and host combinations' : '',
+      d.avg_duration ? 'Average successful run: ' + R.duration(d.avg_duration) : '',
+    ].filter(Boolean).map(function (l) { return '- ' + l; }).join('\n') + '\n';
+    if ((d.causes || []).length) {
+      md += '\n### Causes\n\n| Cause | Failures | Setups | Exit code | Last seen |\n| --- | ---: | ---: | --- | --- |\n';
+      d.causes.forEach(function (c) {
+        md += '| ' + [c.message, c.failures, c.setups, c.exit_code + ' (' + c.exit_description + ')', c.last_seen].map(R.mdCell).join(' | ') + ' |\n';
+      });
+    }
+    if ((d.recent || []).length) {
+      md += '\n### Recent runs\n\n| Started | Status | Result | Duration | Host | OS | Execution ID |\n| --- | --- | --- | --- | --- | --- | --- |\n';
+      d.recent.forEach(function (r) {
+        md += '| ' + [r.started_at, (R.STATUS[r.status] || { label: r.status }).label, R.headline(r), R.duration(r.duration),
+          R.hostName(r), R.osName(r), r.execution_id || r.random_id].map(R.mdCell).join(' | ') + ' |\n';
+      });
+    }
+    md += '\nData: ' + location.origin + '/api/script-detail?' + detailQuery().toString() + '\n';
+    return md;
+  }
+
+  async function loadDetail() {
+    const seq = ++detailSeq;
+    detail = null;
+    $('scriptBody').innerHTML = detailHead(state.app, null) + '<p class="empty">Loading the runs of ' + esc(state.app) + '</p>';
+    try {
+      const d = await R.getJSON('/api/script-detail?' + detailQuery().toString());
+      if (seq !== detailSeq) return;
+      detail = d;
+      $('scriptBody').innerHTML = detailHTML(d);
+    } catch (e) {
+      if (seq !== detailSeq) return;
+      $('scriptBody').innerHTML = detailHead(state.app, null) +
+        '<p class="banner banner-error">Could not load ' + esc(state.app) + ': ' + esc(e.message) + '</p>';
+    }
+  }
+
+  function openScript(app) {
+    state.app = app;
+    detailDays = state.days;
+    writeURL();
+    const dlg = $('scriptDialog');
+    if (dlg.showModal && !dlg.open) dlg.showModal();
+    else dlg.setAttribute('open', '');
+    return loadDetail();
+  }
+
+  let searchTimer = null;
+  function bind() {
+    document.addEventListener('click', function (e) {
+      const t = e.target;
+      if (!t || !t.closest) return;
+      const segBtn = t.closest('.seg[data-filter] button');
+      if (segBtn) {
+        const key = segBtn.closest('.seg').getAttribute('data-filter');
+        state[key] = segBtn.getAttribute('data-value');
+        if (key === 'repo') state.slug = '';
+        state.all = false;
+        load();
+        return;
+      }
+      const daySeg = t.closest('.seg[data-dfilter] button');
+      if (daySeg) {
+        detailDays = daySeg.getAttribute('data-value');
+        loadDetail();
+        return;
+      }
+      const sortBtn = t.closest('.th-sort[data-ssort]');
+      if (sortBtn) {
+        const f = sortBtn.getAttribute('data-ssort');
+        state.sort = state.sort === '-' + f ? f : '-' + f;
+        writeURL();
+        syncControls();
+        renderTable();
+        return;
+      }
+      const md = t.closest('[data-sd="markdown"]');
+      if (md) {
+        R.copyText(detailMarkdown(), md);
+        return;
+      }
+      const run = t.closest('[data-srun]');
+      if (run && detail) {
+        const rec = (detail.recent || [])[Number(run.getAttribute('data-srun'))];
+        if (rec) R.openRecord(rec);
+        return;
+      }
+      const row = t.closest('[data-script]');
+      if (row && !t.closest('a')) {
+        const s = rows[Number(row.getAttribute('data-script'))];
+        if (s) openScript(s.app);
       }
     });
+    $('fSlug').addEventListener('change', function () { state.slug = this.value; state.all = false; load(); });
+    $('refreshBtn').addEventListener('click', load);
+    $('fSearch').addEventListener('input', function () {
+      const v = this.value.trim();
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(function () { state.search = v; state.all = false; writeURL(); renderTable(); }, 150);
+    });
+    $('fType').addEventListener('change', function () { state.type = this.value; state.all = false; writeURL(); renderTable(); });
+    $('fFailing').addEventListener('change', function () { state.failing = this.checked ? '1' : ''; state.all = false; writeURL(); renderTable(); });
+    $('showAll').addEventListener('click', function () { state.all = !state.all; renderTable(); });
+    $('scriptDialog').addEventListener('close', function () { state.app = ''; detailSeq++; writeURL(); });
   }
-}
 
-document.addEventListener('keydown', e => { if (e.key === 'Escape') closeScriptDetail(); });
-
-function toggleExpand(which) {
-  if (which === 'top') {
-    expandTop = !expandTop;
-    renderTopTable();
-  } else if (which === 'bottom') {
-    expandBottom = !expandBottom;
-    renderBottomTable();
-  } else {
-    expandRecent = !expandRecent;
-    renderRecentTable();
+  async function init() {
+    R.initChrome();
+    readURL();
+    bind();
+    const app = state.app;
+    await load();
+    if (app) await openScript(app);
   }
-}
 
-async function refreshData() {
-  const data = await fetchData();
-  if (!data) return;
-  currentData = data;
-  updateStats(data);
-  renderTopTable();
-  renderBottomTable();
-  renderRecentTable();
-}
-
-document.querySelectorAll('.filter-btn').forEach(btn => {
-  btn.addEventListener('click', function() {
-    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
-    this.classList.add('active');
-    refreshData();
-  });
-});
-document.querySelectorAll('.source-btn').forEach(btn => {
-  btn.addEventListener('click', function() {
-    document.querySelectorAll('.source-btn').forEach(b => b.classList.remove('active'));
-    this.classList.add('active');
-    refreshData();
-  });
-});
-document.querySelectorAll('.platform-btn').forEach(btn => {
-  btn.addEventListener('click', function() {
-    document.querySelectorAll('.platform-btn').forEach(b => b.classList.remove('active'));
-    this.classList.add('active');
-    refreshData();
-  });
-});
-refreshData();
-
-// Deep link: /script-analysis?app=jellyfin opens the drill-down directly
-// (used by the clickable Top Applications chart on the dashboard)
-(function() {
-  const params = new URLSearchParams(window.location.search);
-  const app = params.get('app');
-  if (app) openScriptDetail(app);
+  window.ScriptsPage = {
+    init: init, state: state, openScript: openScript, detailMarkdown: detailMarkdown,
+    data: function () { return data; }, detail: function () { return detail; }, rows: function () { return rows; },
+  };
+  if (!window.__NO_AUTOSTART__) init();
 })();

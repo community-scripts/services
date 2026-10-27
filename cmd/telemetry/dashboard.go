@@ -271,6 +271,9 @@ type ScriptStat struct {
 	LastFailure      string  `json:"last_failure,omitempty"`
 	LastFailureCause string  `json:"last_failure_cause,omitempty"`
 	LastFailureID    string  `json:"last_failure_id,omitempty"`
+	LastSuccess      string  `json:"last_success,omitempty"`
+	FailingNow       bool    `json:"failing_now"`
+	SetupsFailed     int     `json:"setups_failed"`
 }
 
 type RecentScript struct {
@@ -296,25 +299,35 @@ type TelemetryRecord struct {
 // Per-Script Detail (daily drill-down)
 // ========================================================
 
-// ScriptDetailData is the per-script drill-down: daily series, error
-// breakdown, OS/platform distribution, and recent installations.
+// ScriptDetailData is one script's runs: outcomes over time, causes, platforms and recent runs.
 type ScriptDetailData struct {
-	App            string            `json:"app"`
-	Type           string            `json:"type"`
-	Total          int               `json:"total"`
-	Success        int               `json:"success"`
-	Failed         int               `json:"failed"`
-	Aborted        int               `json:"aborted"`
-	SuccessRate    float64           `json:"success_rate"`
-	AvgDuration    float64           `json:"avg_duration"` // seconds, successful installs
-	Daily          []ScriptDailyStat `json:"daily"`
-	ExitCodes      []ExitCodeStat    `json:"exit_codes"`
-	OsDistribution []OsCount         `json:"os_distribution"`
-	PlatformStats  []PlatformCount   `json:"platform_stats"`
-	Recent         []TelemetryRecord `json:"recent"`
+	App            string                    `json:"app"`
+	Type           string                    `json:"type"`
+	Days           int                       `json:"days"`
+	Bucket         string                    `json:"bucket"`
+	Total          int                       `json:"total"`
+	Success        int                       `json:"success"`
+	Failed         int                       `json:"failed"`
+	Aborted        int                       `json:"aborted"`
+	NoResult       int                       `json:"no_result"`
+	InProgress     int                       `json:"in_progress"`
+	SuccessRate    float64                   `json:"success_rate"`
+	FailureRate    float64                   `json:"failure_rate"`
+	AvgDuration    float64                   `json:"avg_duration"` // seconds, successful runs
+	SetupsFailed   int                       `json:"setups_failed"`
+	LastFailure    string                    `json:"last_failure,omitempty"`
+	LastSuccess    string                    `json:"last_success,omitempty"`
+	FailingNow     bool                      `json:"failing_now"`
+	Daily          []ScriptDailyStat         `json:"daily"`
+	Causes         []Cause                   `json:"causes"`
+	Breakdown      map[string][]BreakdownRow `json:"breakdown"`
+	ExitCodes      []ExitCodeStat            `json:"exit_codes"`
+	OsDistribution []OsCount                 `json:"os_distribution"`
+	PlatformStats  []PlatformCount           `json:"platform_stats"`
+	Recent         []RunRecord               `json:"recent"`
 }
 
-// ScriptDailyStat is one day of installs for a single script.
+// ScriptDailyStat is one day, or one hour for a one-day period, of a script's runs.
 type ScriptDailyStat struct {
 	Date    string `json:"date"`
 	Total   int    `json:"total"`

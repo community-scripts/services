@@ -463,7 +463,7 @@
   }
 
   function init() {
-    try { if (localStorage.getItem('theme') === 'light') document.documentElement.setAttribute('data-theme', 'light'); } catch (e) { /* storage unavailable */ }
+    R.initChrome();
     readURL();
     bind();
     return load();

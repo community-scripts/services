@@ -1,5 +1,5 @@
-// Renders the dashboard and the error page against API fixtures and checks
-// what they show. Run from cmd/telemetry: node testdata/pages-smoke.js <fixtures dir>
+// Renders the dashboard, the error page and the scripts page against API
+// fixtures and checks what they show. Run from cmd/telemetry: node testdata/pages-smoke.js <fixtures dir>
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -28,6 +28,8 @@ function api(url) {
     case '/api/causes': return fixture('causes.json');
     case '/api/app-errors': return fixture('app-errors.json');
     case '/api/repo-slugs': return fixture('repo-slugs.json');
+    case '/api/scripts': return fixture('scripts.json');
+    case '/api/script-detail': return q.get('app') === 'immich' ? fixture('script-detail.json') : null;
     case '/api/records': {
       let recs = allRecords.filter((r) =>
         (!q.get('status') || r.status === q.get('status')) &&
@@ -90,7 +92,7 @@ function page(template, scripts, search) {
       createObjectURL(b) { const k = 'blob:' + Object.keys(blobs).length; blobs[k] = b; return k; }, revokeObjectURL() {},
     }),
     Blob, Promise, JSON, Date, Math, Number, String, Array, Object, Set, Error, RegExp, isNaN,
-    location: { pathname: template === 'dashboard.html' ? '/' : '/error-analysis', search: search || '', origin: 'http://localhost', href: 'http://localhost/' },
+    location: { pathname: template === 'dashboard.html' ? '/' : '/' + template.replace('.html', ''), search: search || '', origin: 'http://localhost', href: 'http://localhost/' },
     history: { replaceState(_s, _t, url) { ctx.location.search = url.includes('?') ? url.slice(url.indexOf('?')) : ''; } },
     localStorage: { getItem: () => null, setItem() {} },
     navigator: { clipboard: { writeText(t) { clipboard.push(t); return Promise.resolve(); } } },
@@ -220,13 +222,59 @@ async function errorPage() {
   return new Set([...p.missing(), ...linked.missing()]);
 }
 
+async function scriptsPage() {
+  const p = page('script-analysis.html', ['runs.js', 'script-analysis.js']);
+  await p.ctx.ScriptsPage.init();
+  const cards = p.el('cards').innerHTML;
+  for (const s of ['Scripts', 'Runs', 'Failure rate', 'Failing now']) {
+    expect(cards.includes(s), 'scripts cards lack ' + JSON.stringify(s));
+  }
+  const body = p.el('scriptsBody').innerHTML;
+  expect(body.includes('docker') && body.includes('immich'), 'the scripts table lacks docker or immich');
+  expect(body.includes('outcome-bar') && body.includes('chip-failed'), 'the scripts table lacks outcome bars or the failing chip');
+  expect(body.includes('npm ERR! code ENOSPC'), 'the immich row lacks its last failure cause');
+  expect(p.el('scriptsInfo').textContent.startsWith('Showing'), 'the table footer is empty');
+  expect(p.el('apiLink').href.startsWith('/api/scripts?'), 'the JSON link is missing');
+
+  p.click(p.target('.th-sort[data-ssort]', { 'data-ssort': 'failure_rate' }));
+  expect(p.ctx.location.search.includes('sort=-failure_rate'), 'sorting does not reach the URL');
+  const first = p.ctx.ScriptsPage.rows()[0];
+  expect(first && first.failure_rate === Math.max(...p.ctx.ScriptsPage.data().top_scripts.map((s) => s.failure_rate)),
+    'sorting by failure rate does not put the highest rate first');
+
+  const idx = p.ctx.ScriptsPage.rows().findIndex((s) => s.app === 'immich');
+  p.click(p.target('[data-script]', { 'data-script': String(idx) }));
+  await tick();
+  expect(p.el('scriptDialog').open, 'the script dialog did not open');
+  expect(p.ctx.location.search.includes('app=immich'), 'the open script does not reach the URL');
+  const dlg = p.el('scriptBody').innerHTML;
+  for (const s of ['immich', 'Failing', 'Success rate', 'Failed setups', 'What fails', 'npm ERR! code ENOSPC', 'Recent runs',
+    'Runs per hour', '<svg', 'Platform', 'Copy as Markdown', '/error-analysis?', 'cause=']) {
+    expect(dlg.includes(s), 'script dialog lacks ' + JSON.stringify(s));
+  }
+  expect(!dlg.includes('exit_code='), 'a raw exit_code header reached the script dialog');
+  const md = p.ctx.ScriptsPage.detailMarkdown();
+  for (const s of ['## immich (LXC), today', 'Failing now: yes', '### Causes', '| npm ERR! code ENOSPC |', '### Recent runs', 'Data: http://localhost/api/script-detail?']) {
+    expect(md.includes(s), 'script Markdown lacks ' + JSON.stringify(s));
+  }
+  const failedRun = p.ctx.ScriptsPage.detail().recent.findIndex((r) => r.status === 'failed');
+  p.click(p.target('[data-srun]', { 'data-srun': String(failedRun) }));
+  expect(p.el('recordDialog').open && p.el('recordBody').innerHTML.includes('What went wrong'), 'a recent run does not open the record dialog');
+
+  const linked = page('script-analysis.html', ['runs.js', 'script-analysis.js'], '?days=1&app=immich');
+  await linked.ctx.ScriptsPage.init();
+  await tick();
+  expect(linked.el('scriptDialog').open && linked.el('scriptBody').innerHTML.includes('What fails'), 'a linked script does not open its dialog');
+  return new Set([...p.missing(), ...linked.missing()]);
+}
+
 (async () => {
-  const missing = new Set([...(await dashboard()), ...(await errorPage())]);
+  const missing = new Set([...(await dashboard()), ...(await errorPage()), ...(await scriptsPage())]);
   for (const id of missing) fail('a script reads #' + id + ', which its template does not have');
   if (failures) {
     console.error('  ' + failures + ' problem(s)');
     process.exit(1);
   }
-  console.log('  pages render: dashboard cards, log, record dialog, error page tables, drill-down and export');
+  console.log('  pages render: dashboard cards, log, record dialog, error page tables, drill-down and export, scripts table and script dialog');
   process.exit(0);
 })().catch((e) => { console.error(e); process.exit(1); });

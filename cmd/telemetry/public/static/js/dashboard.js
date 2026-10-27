@@ -287,12 +287,6 @@
     timer = on ? setInterval(refresh, 30000) : null;
   }
 
-  function applyTheme(t) {
-    if (t === 'light') document.documentElement.setAttribute('data-theme', 'light');
-    else document.documentElement.removeAttribute('data-theme');
-    $('themeIcon').textContent = t === 'light' ? '☀️' : '🌙';
-  }
-
   let searchTimer = null;
   function bind() {
     document.addEventListener('click', function (e) {
@@ -338,24 +332,16 @@
     $('logPrev').addEventListener('click', function () { if (state.page > 1) { state.page--; loadLog(); } });
     $('logNext').addEventListener('click', function () { if (state.page < totalPages) { state.page++; loadLog(); } });
     $('autoRefresh').addEventListener('change', function () { setAutoRefresh(this.checked); });
-    $('themeToggle').addEventListener('click', function () {
-      const next = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
-      try { localStorage.setItem('theme', next); } catch (e) { /* storage unavailable */ }
-      applyTheme(next);
-    });
   }
 
   function init() {
-    let theme = 'dark', auto = false;
-    try { theme = localStorage.getItem('theme') || 'dark'; auto = localStorage.getItem('autoRefresh') === 'true'; } catch (e) { /* storage unavailable */ }
-    applyTheme(theme);
+    let auto = false;
+    try { auto = localStorage.getItem('autoRefresh') === 'true'; } catch (e) { /* storage unavailable */ }
+    R.initChrome();
     readURL();
     bind();
     $('autoRefresh').checked = auto;
     setAutoRefresh(auto);
-    fetch('https://api.github.com/repos/community-scripts/ProxmoxVE').then(function (r) { return r.json(); }).then(function (d) {
-      if (d && d.stargazers_count) $('starCount').textContent = R.num(d.stargazers_count);
-    }).catch(function () { /* stars are decoration */ });
     return refresh();
   }
 

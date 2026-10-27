@@ -405,13 +405,34 @@
     if (t.tagName === 'DIALOG') t.close();
   });
 
+  function applyTheme(t) {
+    if (t === 'light') document.documentElement.setAttribute('data-theme', 'light');
+    else document.documentElement.removeAttribute('data-theme');
+    document.getElementById('themeIcon').textContent = t === 'light' ? '☀️' : '🌙';
+  }
+
+  // The navbar every page shares: theme toggle and the star count.
+  function initChrome() {
+    let theme = 'dark';
+    try { theme = localStorage.getItem('theme') || 'dark'; } catch (e) { /* storage unavailable */ }
+    applyTheme(theme);
+    document.getElementById('themeToggle').addEventListener('click', function () {
+      const next = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+      try { localStorage.setItem('theme', next); } catch (e) { /* storage unavailable */ }
+      applyTheme(next);
+    });
+    fetch('https://api.github.com/repos/community-scripts/ProxmoxVE').then(function (r) { return r.json(); }).then(function (d) {
+      if (d && d.stargazers_count) document.getElementById('starCount').textContent = num(d.stargazers_count);
+    }).catch(function () { /* stars are decoration */ });
+  }
+
   window.RunUI = {
     STATUS: STATUS, esc: esc, num: num, pct: pct, runs: runs, duration: duration, parseTime: parseTime, dateTime: dateTime,
     clock: clock, ago: ago, stageName: stageName, typeName: typeName, typeBadge: typeBadge, platformName: platformName,
     statusChip: statusChip, headline: headline, trend: trend, traceText: traceText, resources: resources, osName: osName,
     hostName: hostName, setupName: setupName, stageTimeline: stageTimeline, recordDialogHTML: recordDialogHTML,
-    runMarkdown: runMarkdown, causeMarkdown: causeMarkdown, columnsSVG: columnsSVG, copyText: copyText,
-    download: download, getJSON: getJSON, openRecord: openRecord, closeRecord: closeRecord,
+    runMarkdown: runMarkdown, causeMarkdown: causeMarkdown, mdCell: mdCell, columnsSVG: columnsSVG, copyText: copyText,
+    download: download, getJSON: getJSON, openRecord: openRecord, closeRecord: closeRecord, initChrome: initChrome,
     current: function () { return current; },
   };
 })();

@@ -87,7 +87,7 @@ The dashboards are public at `https://telemetry.community-scripts.org/`:
 - **`/error-analysis`**: failed runs grouped by cause, applications with errors,
   exit codes and failures over time. Every filter, open cause and app is in the
   URL; causes and apps copy as Markdown and the view exports as JSON.
-- **`/script-analysis`**: per-script runs, failure rate and last failure.
+- **`/script-analysis`**: per-script runs, failure rate, failing now and last failure; a script opens its runs over time, causes and recent runs.
 
 Every figure counts **runs**, not telemetry events. A run is all rows that share
 an `execution_id` (the `random_id` for clients that send none). Its outcome is
@@ -151,7 +151,7 @@ repository root because `//go:embed` cannot reach into a parent directory.
 | `/api/causes`               | GET    | Failed runs grouped by cause                                 |
 | `/api/app-errors`           | GET    | Applications with failures                                   |
 | `/api/scripts`              | GET    | Script analysis data                                         |
-| `/api/script-detail`        | GET    | One script's daily series, exit codes and recent runs        |
+| `/api/script-detail`        | GET    | One script's runs over time, causes and recent runs (`app`)  |
 | `/api/repo-slugs`           | GET    | owner/repo values for the repository filter                  |
 | `/api/exit-codes`           | GET    | Exit-code reference data                                     |
 | `/metrics`                  | GET    | Prometheus-style metrics output                              |

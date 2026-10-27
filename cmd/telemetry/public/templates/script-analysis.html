@@ -3,183 +3,140 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Script Analysis - Proxmox VE Helper-Scripts</title>
+    <title>Scripts - Proxmox VE Helper-Scripts</title>
+    <meta name="description" content="Runs, failure rates and causes per script of the Proxmox VE Helper Scripts">
     <link rel="icon" type="image/svg+xml" href="/static/img/logo.svg?v=cs-amber">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <link rel="stylesheet" href="/static/css/script-analysis.css?v=4">
+    <script src="/static/js/svg-inliner.js" defer></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/dashboard.css?v=5">
+    <link rel="stylesheet" href="/static/css/scripts.css?v=1">
 </head>
 <body>
     <nav class="navbar">
-        <a href="/" class="navbar-brand">
+        <a href="https://community-scripts.github.io/ProxmoxVE/" class="navbar-brand" target="_blank" rel="noopener">
             <img width="28" height="28" src="/static/img/logo.svg?v=cs-amber" alt="" data-brand-logo>
-            Proxmox VE Helper-Scripts
+            <span class="brand-name">Proxmox VE Helper-Scripts</span>
         </a>
         <div class="nav-links">
-            <a href="/" class="nav-link">📊 Dashboard</a>
-            <a href="/error-analysis" class="nav-link">🔍 Error Analysis</a>
-            <a href="/script-analysis" class="nav-link active">📜 Script Analysis</a>
+            <a href="/" class="nav-link">Dashboard</a>
+            <a href="/error-analysis" class="nav-link">Errors</a>
+            <a href="/script-analysis" class="nav-link active" aria-current="page">Scripts</a>
+        </div>
+        <div class="navbar-actions">
+            <a href="https://github.com/community-scripts/ProxmoxVE" target="_blank" rel="noopener" class="github-stars" id="githubStars">
+                <img src="/static/img/star.svg" alt="">
+                <span id="starCount">-</span>
+            </a>
+            <a href="https://github.com/community-scripts/ProxmoxVE" target="_blank" rel="noopener" class="nav-icon" title="GitHub" aria-label="GitHub">
+                <img src="/static/img/github.svg" alt="">
+            </a>
+            <a href="https://discord.gg/2wvnMDgeFz" target="_blank" rel="noopener" class="nav-icon" title="Discord" aria-label="Discord">
+                <img src="/static/img/discord.svg" alt="">
+            </a>
+            <button type="button" class="theme-toggle nav-icon" id="themeToggle" title="Switch theme" aria-label="Switch theme">
+                <span id="themeIcon">🌙</span>
+            </button>
         </div>
     </nav>
 
-    <div class="main-content">
+    <main class="main-content">
         <div class="page-header">
-            <h1>📜 Script Analysis</h1>
-            <p>Script usage statistics, popularity rankings, and recent activity.</p>
+            <h1>Scripts</h1>
+            <p>Every script that ran in this period, counted per run. Select one for its history, causes and recent runs.</p>
         </div>
 
-        <div class="filters-bar" style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 12px; margin-bottom: 24px;">
-            <div class="filter-group">
-                <label>Source:</label>
-                <div class="quickfilter">
-                    <button class="source-btn active" data-repo="all">All</button>
-                    <button class="source-btn" data-repo="ProxmoxVE">ProxmoxVE</button>
-                    <button class="source-btn" data-repo="DevScripts">DevScripts</button>
-                </div>
+        <div class="filter-row" role="group" aria-label="Filters">
+            <div class="seg" data-filter="repo" role="group" aria-label="Source">
+                <button type="button" data-value="all">All sources</button>
+                <button type="button" data-value="ProxmoxVE">ProxmoxVE</button>
+                <button type="button" data-value="DevScripts">DevScripts</button>
+                <button type="button" data-value="external">External</button>
             </div>
-            <div class="filter-divider"></div>
-            <div class="filter-group">
-                <label>Platform:</label>
-                <div class="quickfilter">
-                    <button class="platform-btn active" data-platform="">All</button>
-                    <button class="platform-btn" data-platform="pve">Proxmox</button>
-                    <button class="platform-btn" data-platform="incus">Incus</button>
-                </div>
+            <div class="seg" data-filter="platform" role="group" aria-label="Platform">
+                <button type="button" data-value="">All platforms</button>
+                <button type="button" data-value="pve">Proxmox</button>
+                <button type="button" data-value="incus">Incus</button>
             </div>
-            <div class="filter-divider"></div>
-            <div class="filter-group">
-                <label>Period:</label>
-                <div class="quickfilter">
-                    <button class="filter-btn active" data-days="1">Today</button>
-                    <button class="filter-btn" data-days="7">7 Days</button>
-                    <button class="filter-btn" data-days="30">30 Days</button>
-                    <button class="filter-btn" data-days="0">All Time</button>
-                </div>
+            <label class="field"><span class="sr-only">Repository</span>
+                <select id="fSlug" class="custom-select"><option value="">All repositories</option></select></label>
+            <div class="seg" data-filter="days" role="group" aria-label="Period">
+                <button type="button" data-value="1">Today</button>
+                <button type="button" data-value="7">7 days</button>
+                <button type="button" data-value="30">30 days</button>
+                <button type="button" data-value="90">90 days</button>
+                <button type="button" data-value="365">1 year</button>
+            </div>
+            <div class="filter-tail">
+                <button type="button" class="btn" id="refreshBtn"><img src="/static/img/refresh.svg" alt="">Refresh</button>
+                <span class="updated" id="updated" aria-live="polite"></span>
             </div>
         </div>
 
-        <!-- Stats -->
-        <div class="stats-grid">
-            <div class="stat-card">
-                <div class="label">Runs</div>
-                <div class="value" id="totalInstalls" style="color:var(--accent-cyan);">-</div>
-            </div>
-            <div class="stat-card">
-                <div class="label">Unique Scripts</div>
-                <div class="value" id="uniqueScripts" style="color:var(--accent-blue);">-</div>
-            </div>
-            <div class="stat-card">
-                <div class="label">Average runs per script</div>
-                <div class="value" id="avgInstalls" style="color:var(--accent-green);">-</div>
-            </div>
-        </div>
+        <div id="errorBanner" class="banner banner-error" role="alert" hidden></div>
 
-        <!-- Top Scripts -->
-        <div class="section-card">
-            <h2>
-                🏆 Most Used Scripts
-                <div style="display:flex;gap:8px;align-items:center;">
-                    <input type="text" class="search-input" id="searchTop" placeholder="Search scripts..." oninput="renderTopTable()">
-                    <button class="btn btn-sm" id="expandTopBtn" onclick="toggleExpand('top')">Show All</button>
+        <section class="cards cards-4" id="cards" aria-label="Summary"></section>
+
+        <section class="section-card">
+            <div class="section-header">
+                <div>
+                    <h2>All scripts</h2>
+                    <p>Failure rate is failed runs divided by finished runs. Setups counts the distinct hardware and host combinations among the failures, so one host retrying stays one setup.</p>
                 </div>
-            </h2>
-            <div class="table-wrap" id="topTableWrap">
-                <table>
+                <a class="btn" id="apiLink" href="/api/scripts">JSON</a>
+            </div>
+            <div class="toolbar">
+                <label class="field"><span class="sr-only">Script</span>
+                    <input type="search" class="search-input" id="fSearch" placeholder="Filter by script" autocomplete="off"></label>
+                <label class="field"><span class="sr-only">Type</span>
+                    <select id="fType" class="custom-select">
+                        <option value="">All types</option>
+                        <option value="lxc">LXC</option>
+                        <option value="vm">VM</option>
+                        <option value="pve">Tools</option>
+                        <option value="addon">Add-ons</option>
+                    </select></label>
+                <label class="toggle"><input type="checkbox" id="fFailing"> Failing now only</label>
+            </div>
+            <div class="table-wrapper">
+                <table class="scripts">
                     <thead>
                         <tr>
-                            <th>#</th>
-                            <th>Script</th>
-                            <th>Type</th>
-                            <th>Runs</th>
-                            <th>Success</th>
-                            <th>Failed</th>
-                            <th>Aborted</th>
-                            <th>In progress</th>
-                            <th title="Failed runs divided by finished (successful or failed) runs">Failure rate</th>
-                            <th>Last failure</th>
-                            <th>Runs per day</th>
-                            <th style="min-width:100px;">Distribution</th>
+                            <th scope="col" class="num" title="Rank by runs">#</th>
+                            <th scope="col"><button type="button" class="th-sort" data-ssort="app">Script</button></th>
+                            <th scope="col" class="num"><button type="button" class="th-sort" data-ssort="total">Runs</button></th>
+                            <th scope="col" class="num"><button type="button" class="th-sort" data-ssort="success">Success</button></th>
+                            <th scope="col" class="num"><button type="button" class="th-sort" data-ssort="failed">Failed</button></th>
+                            <th scope="col" class="num"><button type="button" class="th-sort" data-ssort="aborted">Aborted</button></th>
+                            <th scope="col" class="num"><button type="button" class="th-sort" data-ssort="no_result">No result</button></th>
+                            <th scope="col" class="num"><button type="button" class="th-sort" data-ssort="failure_rate">Failure rate</button></th>
+                            <th scope="col" class="num"><button type="button" class="th-sort" data-ssort="setups_failed">Setups</button></th>
+                            <th scope="col"><button type="button" class="th-sort" data-ssort="last_failure">Last failure</button></th>
+                            <th scope="col">Outcomes</th>
                         </tr>
                     </thead>
-                    <tbody id="topTableBody"></tbody>
+                    <tbody id="scriptsBody"><tr><td colspan="11" class="empty">Loading scripts</td></tr></tbody>
                 </table>
             </div>
-        </div>
-
-        <!-- Least Used Scripts -->
-        <div class="section-card">
-            <h2>
-                📉 Least Used Scripts
-                <div style="display:flex;gap:8px;align-items:center;">
-                    <input type="text" class="search-input" id="searchBottom" placeholder="Search scripts..." oninput="renderBottomTable()">
-                    <button class="btn btn-sm" id="expandBottomBtn" onclick="toggleExpand('bottom')">Show All</button>
-                </div>
-            </h2>
-            <div class="table-wrap" id="bottomTableWrap">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>#</th>
-                            <th>Script</th>
-                            <th>Type</th>
-                            <th>Runs</th>
-                            <th>Success</th>
-                            <th>Failed</th>
-                            <th>Aborted</th>
-                            <th>In progress</th>
-                            <th title="Failed runs divided by finished (successful or failed) runs">Failure rate</th>
-                            <th>Last failure</th>
-                            <th>Runs per day</th>
-                            <th style="min-width:100px;">Distribution</th>
-                        </tr>
-                    </thead>
-                    <tbody id="bottomTableBody"></tbody>
-                </table>
+            <div class="table-footer">
+                <span class="pagination-info" id="scriptsInfo"></span>
+                <button type="button" class="btn" id="showAll" hidden>Show all</button>
             </div>
-        </div>
+        </section>
+    </main>
 
-        <!-- Recent Scripts -->
-        <div class="section-card">
-            <h2>
-                🕐 Recent Activity
-                <div style="display:flex;gap:8px;align-items:center;">
-                    <input type="text" class="search-input" id="searchRecent" placeholder="Search..." oninput="renderRecentTable()">
-                    <button class="btn btn-sm" id="expandRecentBtn" onclick="toggleExpand('recent')">Show All</button>
-                </div>
-            </h2>
-            <div class="table-wrap" id="recentTableWrap">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Script</th>
-                            <th>Type</th>
-                            <th>Platform</th>
-                            <th>Status</th>
-                            <th>Exit Code</th>
-                            <th>OS</th>
-                            <th>Version</th>
-                            <th>Method</th>
-                            <th>Time</th>
-                        </tr>
-                    </thead>
-                    <tbody id="recentTableBody"></tbody>
-                </table>
-            </div>
-        </div>
-    </div>
+    <dialog id="scriptDialog" class="record-dialog script-dialog" aria-labelledby="scriptTitle">
+        <button type="button" class="dialog-close" data-close-dialog aria-label="Close">&times;</button>
+        <div id="scriptBody"></div>
+    </dialog>
 
-    <!-- Script Detail Modal (per-script daily drill-down) -->
-    <div class="modal-overlay" id="scriptDetailModal" onclick="if(event.target===this)closeScriptDetail()">
-        <div class="modal-content script-detail-modal" onclick="event.stopPropagation()">
-            <div class="modal-header">
-                <h2 id="scriptDetailTitle">Script Details</h2>
-                <button class="modal-close" onclick="closeScriptDetail()">&times;</button>
-            </div>
-            <div class="modal-body" id="scriptDetailBody">
-                <div class="loading">Loading...</div>
-            </div>
-        </div>
-    </div>
+    <dialog id="recordDialog" class="record-dialog" aria-labelledby="recordTitle">
+        <button type="button" class="dialog-close" data-close-dialog aria-label="Close">&times;</button>
+        <div id="recordBody"></div>
+    </dialog>
 
-    <script src="/static/js/script-analysis.js?v=5"></script>
+    <script src="/static/js/runs.js?v=2"></script>
+    <script src="/static/js/script-analysis.js?v=6"></script>
 </body>
 </html>

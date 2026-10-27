@@ -1,0 +1,41 @@
+.cards-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+table.scripts .app-cell { min-width: 220px; max-width: 420px; }
+table.scripts .cause-line { max-width: 400px; }
+tr.script-row, tr.srun-row { cursor: pointer; }
+.outcome-bar {
+  display: flex; width: 120px; height: 8px; margin-top: 6px; border-radius: 4px; overflow: hidden;
+  background: var(--bg-tertiary);
+}
+.outcome-bar span { display: block; height: 100%; }
+.c-silent { fill: var(--accent-slate); background: var(--accent-slate); }
+.c-running { fill: var(--accent-yellow); background: var(--accent-yellow); }
+
+dialog.script-dialog { width: min(1040px, calc(100vw - 24px)); }
+.sd-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
+.sd-controls .rd-actions { margin: 0; flex-wrap: wrap; }
+.sd-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; }
+.sd-stats div { background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 8px; padding: 6px 10px; min-width: 0; }
+.sd-stats dt { font-size: 12px; color: var(--text-muted); }
+.sd-stats dd { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.sd-stats .ok dd { color: var(--accent-green); }
+.sd-stats .bad dd { color: var(--accent-red); }
+.sd-stats .abort dd { color: var(--accent-purple); }
+.sd-stats .silent dd { color: var(--accent-slate); }
+.sd-note { font-size: 13px; color: var(--text-secondary); margin: 8px 0 12px; }
+.sd-table { border: 1px solid var(--border-color); border-radius: 8px; }
+.sd-split { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+table.runs .result-cell { max-width: 360px; }
+table.runs .cause-line { margin-top: 0; max-width: 360px; }
+
+@media (max-width: 1000px) { .cards-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 700px) {
+  table.scripts th:nth-child(1), table.scripts td:nth-child(1),
+  table.scripts th:nth-child(4), table.scripts td:nth-child(4),
+  table.scripts th:nth-child(6), table.scripts td:nth-child(6),
+  table.scripts th:nth-child(7), table.scripts td:nth-child(7),
+  table.scripts th:nth-child(9), table.scripts td:nth-child(9) { display: none; }
+  table.scripts .app-cell { min-width: 160px; max-width: 220px; }
+  table.scripts .cause-line { max-width: 200px; }
+  dialog.script-dialog { padding: 14px; }
+}

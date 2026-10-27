@@ -50,11 +50,16 @@ func writeFixtures(t *testing.T, dir string) {
 		t.Fatal(err)
 	}
 	write("app-errors.json", AppErrorsResponse{Days: 1, MinRuns: minRunsForRate(1), Apps: apps})
-	scripts, err := ch.FetchScriptStats(ctx, 1, "", "", nil)
+	scripts, err := ch.FetchScriptStats(ctx, RunFilter{Days: 1}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	write("scripts.json", scripts)
+	detail, err := ch.FetchScriptDetail(ctx, RunFilter{Days: 1, App: "immich"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	write("script-detail.json", detail)
 	write("repo-slugs.json", map[string]interface{}{"repo_slugs": dash.RepoSlugs})
 }
 

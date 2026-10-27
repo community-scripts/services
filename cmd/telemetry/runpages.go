@@ -185,8 +185,9 @@ func (ch *CHClient) FetchDashboardPage(ctx context.Context, f RunFilter) (*Dashb
 }
 
 // FetchScriptStats lists every script with per-run counts and its last failure.
-func (ch *CHClient) FetchScriptStats(ctx context.Context, days int, repoSource, platform string, knownScripts map[string]ScriptInfo) (*ScriptAnalysisData, error) {
-	f := RunFilter{Days: days, RepoSource: repoSource, Platform: platform, Type: "all"}
+func (ch *CHClient) FetchScriptStats(ctx context.Context, f RunFilter, knownScripts map[string]ScriptInfo) (*ScriptAnalysisData, error) {
+	f.Type = "all"
+	days := f.Days
 	apps, err := ch.FetchAppStats(ctx, f, false, 0)
 	if err != nil {
 		return nil, fmt.Errorf("CH script stats: %w", err)
@@ -223,6 +224,7 @@ func (ch *CHClient) FetchScriptStats(ctx context.Context, days int, repoSource, 
 			App: a.App, Type: a.Type,
 			Total: a.Runs, Success: a.Success, Failed: a.Failed, Aborted: a.Aborted,
 			Installing: a.InProgress, NoResult: a.NoResult, FailureRate: a.FailureRate,
+			SetupsFailed: a.SetupsFailed, FailingNow: a.FailingNow, LastSuccess: a.LastSuccess,
 			LastFailure: a.LastFailure, LastFailureID: a.LastFailureID,
 			LastFailureCause: causeByID[a.LastFailureID],
 		}
@@ -250,7 +252,95 @@ func (ch *CHClient) FetchScriptStats(ctx context.Context, days int, repoSource, 
 		}
 	}
 	data.TotalScripts = len(data.TopScripts)
-	data.RecentScripts = ch.fetchRecentScripts(ctx, days, repoSource, platform)
+	data.RecentScripts = ch.fetchRecentScripts(ctx, f)
+	return data, nil
+}
+
+// FetchScriptDetail is one script's runs over the period, counted per run like the other pages.
+func (ch *CHClient) FetchScriptDetail(ctx context.Context, f RunFilter) (*ScriptDetailData, error) {
+	if f.Type == "" {
+		f.Type = "all"
+	}
+	bucket := "day"
+	dims := []breakdownDim{dimAll, dimDay, dimOS, dimPlatform, dimExit}
+	if f.Days == 1 {
+		bucket = "hour"
+		dims = []breakdownDim{dimAll, dimHour, dimOS, dimPlatform, dimExit}
+	}
+	var (
+		b                      Breakdown
+		causes                 []Cause
+		apps                   []AppErrorStat
+		recent                 []RunRecord
+		bErr, cErr, aErr, rErr error
+	)
+	parallel(
+		func() { b, bErr = ch.fetchBreakdown(ctx, f, dims) },
+		func() { causes, cErr = ch.FetchCauses(ctx, f, 10, false) },
+		func() { apps, aErr = ch.FetchAppStats(ctx, f, false, 1) },
+		func() { recent, _, rErr = ch.FetchRuns(ctx, f, 1, 15, "-created") },
+	)
+	if bErr != nil {
+		return nil, fmt.Errorf("script detail: %w", bErr)
+	}
+	for name, err := range map[string]error{"causes": cErr, "app stats": aErr, "recent runs": rErr} {
+		if err != nil {
+			log.Printf("[CH] script detail %s: %v", name, err)
+		}
+	}
+
+	s := summaryFrom(b.one("all"))
+	data := &ScriptDetailData{
+		App: f.App, Days: f.Days, Bucket: bucket,
+		Total: s.Runs, Success: s.Success, Failed: s.Failed, Aborted: s.Aborted,
+		NoResult: s.NoResult, InProgress: s.InProgress,
+		SuccessRate: s.SuccessRate, FailureRate: s.FailureRate, AvgDuration: s.AvgDuration,
+		Causes: causes, Recent: recent,
+		Breakdown: map[string][]BreakdownRow{"platform": b.top("platform", 0), "os": b.top("os", 8)},
+	}
+	if data.Causes == nil {
+		data.Causes = []Cause{}
+	}
+	if data.Recent == nil {
+		data.Recent = []RunRecord{}
+	}
+	if len(apps) > 0 {
+		a := apps[0]
+		data.Type, data.SetupsFailed = a.Type, a.SetupsFailed
+		data.LastFailure, data.LastSuccess, data.FailingNow = a.LastFailure, a.LastSuccess, a.FailingNow
+	} else if len(recent) > 0 {
+		data.Type = recent[0].Type
+	}
+
+	now := time.Now().UTC()
+	if bucket == "hour" {
+		byHour := byLabel(b["hour"])
+		for h := now.Truncate(24 * time.Hour); !h.After(now); h = h.Add(time.Hour) {
+			r := byHour[h.Format("2006-01-02 15:04:05")]
+			data.Daily = append(data.Daily, ScriptDailyStat{Date: h.Format(time.RFC3339), Total: r.Runs, Success: r.Success, Failed: r.Failed, Aborted: r.Aborted})
+		}
+	} else {
+		for _, d := range buildDailyStats(byLabel(b["day"]), f.Days, now) {
+			data.Daily = append(data.Daily, ScriptDailyStat{Date: d.Date, Total: d.Runs, Success: d.Success, Failed: d.Failed, Aborted: d.Aborted})
+		}
+	}
+	for _, r := range b.top("exit", 10) {
+		code, _ := strconv.Atoi(r.Label)
+		pct := 0.0
+		if s.Failed > 0 {
+			pct = float64(r.Runs) / float64(s.Failed) * 100
+		}
+		data.ExitCodes = append(data.ExitCodes, ExitCodeStat{
+			ExitCode: code, Count: r.Runs, Percentage: pct,
+			Description: getExitCodeDescription(code), Category: getExitCodeCategory(code),
+		})
+	}
+	for _, r := range b.top("os", 10) {
+		data.OsDistribution = append(data.OsDistribution, OsCount{Os: r.Label, Count: r.Runs})
+	}
+	for _, r := range b.top("platform", 0) {
+		data.PlatformStats = append(data.PlatformStats, PlatformCount{Platform: r.Label, Count: r.Runs})
+	}
 	return data, nil
 }
 
@@ -283,13 +373,12 @@ func runHeadline(r RunRecord) string {
 	return ""
 }
 
-func (ch *CHClient) fetchRecentScripts(ctx context.Context, days int, repoSource, platform string) []RecentScript {
-	recentDays := days
+func (ch *CHClient) fetchRecentScripts(ctx context.Context, sf RunFilter) []RecentScript {
+	recentDays := sf.Days
 	if recentDays == 0 || recentDays > 30 {
 		recentDays = 30
 	}
-	f := RunFilter{Days: recentDays, RepoSource: repoSource, Platform: platform, Type: "all",
-		Status: ""}
+	f := RunFilter{Days: recentDays, RepoSource: sf.RepoSource, RepoSlug: sf.RepoSlug, Platform: sf.Platform, Type: "all"}
 	q, args := f.sql(runQuery{
 		sel: `r_app, r_type, r_outcome, toInt64(r_exit), r_os, r_osver, r_pve, r_method, r_platform,
 	toString(r_end)`,

@@ -1772,12 +1772,9 @@ func main() {
 			}
 		}
 
-		// repo_source is optional (no param = all sources)
-		repoSource := r.URL.Query().Get("repo")
-		if repoSource == "all" {
-			repoSource = ""
-		}
+		repoSource, repoSlug := parseRepoFilters(r)
 		platform := parsePlatform(r)
+		f := RunFilter{Days: days, RepoSource: repoSource, RepoSlug: repoSlug, Platform: platform}
 
 		ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 		defer cancel()
@@ -1785,6 +1782,9 @@ func main() {
 		cacheKey := fmt.Sprintf("scripts:%d:%s", days, repoSource)
 		if platform != "" {
 			cacheKey += ":p=" + platform
+		}
+		if repoSlug != "" {
+			cacheKey += ":s=" + repoSlug
 		}
 		var data *ScriptAnalysisData
 		if cfg.CacheEnabled && cache.Get(ctx, cacheKey, &data) {
@@ -1797,7 +1797,7 @@ func main() {
 						defer cache.FinishRefresh(cacheKey)
 						refreshCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 						defer cancel()
-						freshData, err := ch.FetchScriptStats(refreshCtx, days, repoSource, platform, nil)
+						freshData, err := ch.FetchScriptStats(refreshCtx, f, nil)
 						if err != nil {
 							log.Printf("[CACHE] background refresh failed for %s: %v", cacheKey, err)
 							return
@@ -1810,7 +1810,7 @@ func main() {
 			return
 		}
 
-		data, err := ch.FetchScriptStats(ctx, days, repoSource, platform, nil)
+		data, err := ch.FetchScriptStats(ctx, f, nil)
 		if err != nil {
 			log.Printf("script stats fetch failed: %v", err)
 			http.Error(w, "failed to fetch script data", http.StatusInternalServerError)
@@ -1830,55 +1830,6 @@ func main() {
 		json.NewEncoder(w).Encode(data)
 	})
 
-	// Per-script drill-down: daily series, exit codes, OS/platform, recent installs
-	mux.HandleFunc("/api/script-detail", func(w http.ResponseWriter, r *http.Request) {
-		app := strings.TrimSpace(r.URL.Query().Get("app"))
-		if app == "" {
-			http.Error(w, "missing app parameter", http.StatusBadRequest)
-			return
-		}
-
-		days := 30
-		if d := r.URL.Query().Get("days"); d != "" {
-			fmt.Sscanf(d, "%d", &days)
-			if days < 1 {
-				days = 1
-			}
-			if days > 365 {
-				days = 365
-			}
-		}
-		repoSource, _ := parseRepoFilters(r)
-		platform := parsePlatform(r)
-
-		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
-		defer cancel()
-
-		cacheKey := fmt.Sprintf("scriptdetail:%s:%d:%s:p=%s", app, days, repoSource, platform)
-		var data *ScriptDetailData
-		if cfg.CacheEnabled && cache.Get(ctx, cacheKey, &data) {
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("X-Cache", "HIT")
-			json.NewEncoder(w).Encode(data)
-			return
-		}
-
-		data, err := ch.FetchScriptDetail(ctx, app, days, repoSource, platform)
-		if err != nil {
-			log.Printf("script detail fetch failed (app=%s): %v", app, err)
-			http.Error(w, "failed to fetch script detail", http.StatusInternalServerError)
-			return
-		}
-
-		if cfg.CacheEnabled {
-			_ = cache.Set(ctx, cacheKey, data, 2*time.Minute)
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("X-Cache", "MISS")
-		json.NewEncoder(w).Encode(data)
-	})
-
 	errorsTimeout := func(days int) time.Duration {
 		switch {
 		case days >= 365:
@@ -1888,6 +1839,20 @@ func main() {
 		}
 		return 120 * time.Second
 	}
+
+	mux.HandleFunc("/api/script-detail", func(w http.ResponseWriter, r *http.Request) {
+		f, err := parseRunFilter(r.URL.Query(), 30, 365, "all")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if f.App == "" {
+			http.Error(w, "missing app parameter", http.StatusBadRequest)
+			return
+		}
+		serveCachedJSON(w, r, cache, cfg.CacheEnabled, f.cacheKey("scriptdetail"), dashboardTTL(f.Days), errorsTimeout(f.Days),
+			func(ctx context.Context) (*ScriptDetailData, error) { return ch.FetchScriptDetail(ctx, f) })
+	})
 
 	mux.HandleFunc("/api/errors", func(w http.ResponseWriter, r *http.Request) {
 		f, err := parseRunFilter(r.URL.Query(), 7, 365, "")
@@ -2559,7 +2524,7 @@ func warmupCaches(ch *CHClient, cache *Cache, cfg Config, todayOnly bool) {
 			{7}, {30}, {0},
 		} {
 			ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
-			data, err := ch.FetchScriptStats(ctx, spec.days, "", "", nil)
+			data, err := ch.FetchScriptStats(ctx, RunFilter{Days: spec.days}, nil)
 			cancel()
 			if err != nil {
 				log.Printf("[CACHE] scripts:%d warmup failed: %v", spec.days, err)
@@ -2609,7 +2574,7 @@ func warmupCaches(ch *CHClient, cache *Cache, cfg Config, todayOnly bool) {
 				cacheKey := fmt.Sprintf("scripts:%d:%s", days, repo)
 				if cache.TryStartRefresh(cacheKey) {
 					ctx, cancel := context.WithTimeout(context.Background(), timeout)
-					data, err := ch.FetchScriptStats(ctx, days, repo, "", nil)
+					data, err := ch.FetchScriptStats(ctx, RunFilter{Days: days, RepoSource: repo}, nil)
 					cancel()
 					cache.FinishRefresh(cacheKey)
 					if err != nil {
