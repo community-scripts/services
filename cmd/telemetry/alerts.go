@@ -135,7 +135,7 @@ func (a *Alerter) checkAndAlert() {
 	defer cancel()
 
 	// Fetch last hour's data
-	data, err := a.pb.FetchDashboardData(ctx, 1, "ProxmoxVE", "", "")
+	data, err := a.pb.FetchDashboardData(ctx, RunFilter{Days: 1, RepoSource: "ProxmoxVE"})
 	if err != nil {
 		log.Printf("WARN: alert check failed: %v", err)
 		return
@@ -411,13 +411,13 @@ func (a *Alerter) fetchWeeklyReportData(ctx context.Context) (*WeeklyReportData,
 	year, week := lastMonday.ISOWeek()
 
 	// Fetch current week's data (7 days)
-	currentData, err := a.pb.FetchDashboardData(ctx, 7, "ProxmoxVE", "", "")
+	currentData, err := a.pb.FetchDashboardData(ctx, RunFilter{Days: 7, RepoSource: "ProxmoxVE"})
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch current week data: %w", err)
 	}
 
 	// Fetch previous week's data for comparison (14 days, we'll compare)
-	prevData, err := a.pb.FetchDashboardData(ctx, 14, "ProxmoxVE", "", "")
+	prevData, err := a.pb.FetchDashboardData(ctx, RunFilter{Days: 14, RepoSource: "ProxmoxVE"})
 	if err != nil {
 		// Non-fatal, just log
 		log.Printf("WARN: could not fetch previous week data: %v", err)
