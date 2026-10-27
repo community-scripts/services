@@ -123,7 +123,7 @@ func stringArgs(ss []string) []interface{} {
 
 // migrateCountSQL counts the dev rows of the slugs and lists the days they were created on.
 func migrateCountSQL(slugs []string) sqlStmt {
-	return sqlStmt{fmt.Sprintf(`SELECT count(), arrayMap(d -> toString(d), groupUniqArray(toDate(created)))
+	return sqlStmt{fmt.Sprintf(`SELECT count(), arrayStringConcat(arrayMap(d -> toString(d), groupUniqArray(toDate(created))), ',')
 		FROM telemetry_db.telemetry
 		WHERE nsapp IN (%s) AND repo_source IN %s`, inList(len(slugs)), devSourcesSQL), stringArgs(slugs)}
 }
@@ -175,13 +175,14 @@ func migrateScriptStatements(slugs, days []string) []sqlStmt {
 func (ch *CHClient) MigrateScript(ctx context.Context, slugs []string) (int, int, error) {
 	count := migrateCountSQL(slugs)
 	var moved uint64
-	var days []string
-	if err := ch.db.QueryRowContext(ctx, count.q, count.args...).Scan(&moved, &days); err != nil {
+	var dayList string
+	if err := ch.db.QueryRowContext(ctx, count.q, count.args...).Scan(&moved, &dayList); err != nil {
 		return 0, 0, fmt.Errorf("count: %w", err)
 	}
-	if moved == 0 {
+	if moved == 0 || dayList == "" {
 		return 0, 0, nil
 	}
+	days := strings.Split(dayList, ",")
 	for i, s := range migrateScriptStatements(slugs, days) {
 		if _, err := ch.db.ExecContext(ctx, s.q, s.args...); err != nil {
 			return 0, 0, fmt.Errorf("statement %d: %w", i+1, err)
