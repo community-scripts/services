@@ -1800,12 +1800,12 @@ func latestStatusSQL(status string) (string, []interface{}) {
 	switch status {
 	case "aborted":
 		return `(status='aborted' OR (status='failed' AND (exit_code IN (129,130)
-			OR positionCaseInsensitive(error,'SIGINT')>0 OR positionCaseInsensitive(error,'SIGHUP')>0
-			OR positionCaseInsensitive(error,'Ctrl+C')>0 OR positionCaseInsensitive(error,'Ctrl-C')>0)))`, nil
+			OR (payload_version < 3 AND (positionCaseInsensitive(error,'SIGINT')>0 OR positionCaseInsensitive(error,'SIGHUP')>0
+			OR positionCaseInsensitive(error,'Ctrl+C')>0 OR positionCaseInsensitive(error,'Ctrl-C')>0)))))`, nil
 	case "failed":
 		return `(status='failed' AND exit_code NOT IN (129,130)
-			AND positionCaseInsensitive(error,'SIGINT')=0 AND positionCaseInsensitive(error,'SIGHUP')=0
-			AND positionCaseInsensitive(error,'Ctrl+C')=0 AND positionCaseInsensitive(error,'Ctrl-C')=0)`, nil
+			AND (payload_version >= 3 OR (positionCaseInsensitive(error,'SIGINT')=0 AND positionCaseInsensitive(error,'SIGHUP')=0
+			AND positionCaseInsensitive(error,'Ctrl+C')=0 AND positionCaseInsensitive(error,'Ctrl-C')=0)))`, nil
 	default:
 		return "status = ?", []interface{}{status}
 	}
@@ -1894,7 +1894,7 @@ func (ch *CHClient) FetchRecordsPaginated(ctx context.Context, page, limit int,
 	// Count distinct installations (not raw event rows).
 	countQ := fmt.Sprintf(`
 		WITH ranked AS (
-			SELECT status, exit_code, error,
+			SELECT status, exit_code, error, payload_version,
 				row_number() OVER (
 					PARTITION BY if(execution_id = '', random_id, execution_id)
 					ORDER BY %s

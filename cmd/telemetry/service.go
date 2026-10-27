@@ -982,14 +982,15 @@ func deriveErrorCategory(code int, errText string) string {
 	return "unknown"
 }
 
-// isAbortSignal reports whether a "failed" outcome is really a user-initiated
-// abort (Ctrl+C / SIGINT, terminal close / SIGHUP, or an explicit user-cancel
-// message) and should be reclassified as "aborted" rather than counted as a
-// failure. Used both at ingest time and when reading records back, so the two
-// paths can never diverge.
-func isAbortSignal(exitCode int, errText string) bool {
+// isAbortSignal reports whether a "failed" outcome is really a user abort.
+// Used at ingest and at read time so the two paths cannot diverge.
+func isAbortSignal(payloadVersion, exitCode int, errText string) bool {
 	if exitCode == 129 || exitCode == 130 {
 		return true
+	}
+	// v3 clients map aborts themselves; their traces quote logs like "press Ctrl+C".
+	if payloadVersion >= 3 {
+		return false
 	}
 	e := strings.ToLower(errText)
 	return containsAny(e, "sigint", "ctrl+c", "ctrl-c", "sighup",
@@ -1481,7 +1482,7 @@ func classifyIngest(in *TelemetryIn, verbose bool) {
 		}
 	}
 
-	if in.Status == "failed" && isAbortSignal(in.ExitCode, in.Error) {
+	if in.Status == "failed" && isAbortSignal(in.PayloadVersion, in.ExitCode, in.Error) {
 		in.Status = "aborted"
 		if in.ErrorCategory == "" || in.ErrorCategory == "unknown" {
 			in.ErrorCategory = "user_aborted"
@@ -1973,7 +1974,7 @@ func main() {
 
 		// Auto-reclassify old records that have status=failed but are actually user aborts
 		for i := range records {
-			if records[i].Status == "failed" && isAbortSignal(records[i].ExitCode, records[i].Error) {
+			if records[i].Status == "failed" && isAbortSignal(records[i].PayloadVersion, records[i].ExitCode, records[i].Error) {
 				records[i].Status = "aborted"
 			}
 		}
