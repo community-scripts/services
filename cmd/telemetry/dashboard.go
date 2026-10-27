@@ -144,9 +144,10 @@ type ErrorAnalysisData struct {
 	Signatures      []ErrorSignature     `json:"signatures"` // grouped by failing command
 }
 
-// ErrorSignature groups failures by the exact command that failed (extracted
-// from the structured error header "… | at line L: <command>").
+// ErrorSignature groups failures by error_message (Kind "message") or, for rows
+// without one, by the failing command from the error header (Kind "command").
 type ErrorSignature struct {
+	Kind        string `json:"kind"`
 	Command     string `json:"command"`
 	Count       int    `json:"count"`
 	TopExitCode int    `json:"top_exit_code"`
@@ -178,6 +179,7 @@ type AppErrorDetail struct {
 	FailureRate  float64 `json:"failure_rate"`
 	TopExitCode  int     `json:"top_exit_code"`
 	TopError     string  `json:"top_error"`
+	TopMessage   string  `json:"top_message,omitempty"`
 	TopCategory  string  `json:"top_category"`
 }
 
@@ -195,6 +197,10 @@ type ErrorRecord struct {
 	ExecutionID     string `json:"execution_id,omitempty"`
 	InstallDuration int    `json:"install_duration,omitempty"`
 	Created         string `json:"created"`
+	ErrorMessage    string `json:"error_message,omitempty"`
+	ErrorStep       string `json:"error_step,omitempty"`
+	ErrorPhase      string `json:"error_phase,omitempty"`
+	FailedFunction  string `json:"failed_function,omitempty"`
 }
 
 type ErrorTimelinePoint struct {

@@ -131,17 +131,22 @@ repository root because `//go:embed` cannot reach into a parent directory.
 
 ## API Endpoints
 
-| Endpoint          | Method | Description                              |
-| ----------------- | ------ | ---------------------------------------- |
-| `/`               | GET    | HTML dashboard UI                        |
-| `/dashboard`      | GET    | Compatibility alias for the dashboard UI |
-| `/telemetry`      | POST   | Receive telemetry data from scripts      |
-| `/healthz`        | GET    | Health check endpoint                    |
-| `/api/dashboard`  | GET    | Dashboard data as JSON                   |
-| `/api/records`    | GET    | Paginated installation log data          |
-| `/api/scripts`    | GET    | Script analysis data                     |
-| `/api/exit-codes` | GET    | Exit-code reference data                 |
-| `/metrics`        | GET    | Prometheus-style metrics output          |
+| Endpoint                    | Method | Description                                                  |
+| --------------------------- | ------ | ------------------------------------------------------------ |
+| `/`                         | GET    | HTML dashboard UI                                            |
+| `/dashboard`                | GET    | Compatibility alias for the dashboard UI                     |
+| `/telemetry`                | POST   | Receive telemetry data from scripts                          |
+| `/healthz`                  | GET    | Health check endpoint                                        |
+| `/api/dashboard`            | GET    | Dashboard data as JSON                                       |
+| `/api/records`              | GET    | Paginated installation log data                              |
+| `/api/scripts`              | GET    | Script analysis data                                         |
+| `/api/exit-codes`           | GET    | Exit-code reference data                                     |
+| `/metrics`                  | GET    | Prometheus-style metrics output                              |
+| `/api/admin/migrate-script` | POST   | Moves promoted scripts' history from DevScripts to ProxmoxVE |
+
+`/api/admin/migrate-script` takes `{"slugs": ["vane"], "from": "DevScripts", "to": "ProxmoxVE"}` with
+`Authorization: Bearer $TELEMETRY_ADMIN_TOKEN` and answers `{"moved": n, "slugs": [...], "days": n}`.
+It returns 403 while `TELEMETRY_ADMIN_TOKEN` is unset, and a second call moves nothing.
 
 Operational endpoints also exist for alerts and cleanup workflows, including `/api/alerts`, `/api/cleanup/status`, and `POST /api/cleanup/run`.
 

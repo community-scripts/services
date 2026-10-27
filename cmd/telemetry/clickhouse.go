@@ -273,6 +273,13 @@ func (ch *CHClient) migrate() {
 		// Collected by the engine, never transmitted until payload version 2.
 		`ALTER TABLE telemetry_db.telemetry ADD COLUMN IF NOT EXISTS kernel_version String`,
 		`ALTER TABLE telemetry_db.telemetry ADD COLUMN IF NOT EXISTS app_version String`,
+
+		// Payload version 3.
+		`ALTER TABLE telemetry_db.telemetry ADD COLUMN IF NOT EXISTS error_message String`,
+		`ALTER TABLE telemetry_db.telemetry ADD COLUMN IF NOT EXISTS error_step String`,
+		`ALTER TABLE telemetry_db.telemetry ADD COLUMN IF NOT EXISTS error_phase LowCardinality(String)`,
+		`ALTER TABLE telemetry_db.telemetry ADD COLUMN IF NOT EXISTS failed_function String`,
+		`ALTER TABLE telemetry_db.telemetry ADD COLUMN IF NOT EXISTS migrated_from LowCardinality(String)`,
 	}
 	for _, s := range alters {
 		if _, err := ch.db.ExecContext(ctx, s); err != nil {
@@ -394,7 +401,8 @@ func (ch *CHClient) InsertTelemetry(ctx context.Context, p TelemetryOut) error {
 		gpu_vendor, gpu_model, gpu_passthrough,
 		ram_speed, install_duration, has_arm, platform,
 		payload_version, arch, failed_command, failed_line,
-		kernel_version, app_version
+		kernel_version, app_version,
+		error_message, error_step, error_phase, failed_function
 	) VALUES (
 		?, ?, ?, ?, ?, now64(3),
 		?, ?, ?, ?,
@@ -405,7 +413,8 @@ func (ch *CHClient) InsertTelemetry(ctx context.Context, p TelemetryOut) error {
 		?, ?, ?,
 		?, ?, ?, ?,
 		?, ?, ?, ?,
-		?, ?
+		?, ?,
+		?, ?, ?, ?
 	)`
 	_, err := ch.db.ExecContext(ctx, q,
 		generateRecordID(), p.NSAPP, p.Type, p.Status, p.Method,
@@ -418,6 +427,7 @@ func (ch *CHClient) InsertTelemetry(ctx context.Context, p TelemetryOut) error {
 		p.RAMSpeed, uint32(p.InstallDuration), boolToUint8(p.HasArm), p.Platform,
 		uint16(p.PayloadVersion), p.Arch, p.FailedCommand, uint32(p.FailedLine),
 		p.KernelVersion, p.AppVersion,
+		p.ErrorMessage, p.ErrorStep, p.ErrorPhase, p.FailedFunction,
 	)
 	return err
 }
@@ -487,6 +497,9 @@ func repoSourcePred(repoSource string) (string, []interface{}) {
 		return "repo_source = ?", []interface{}{repoSource}
 	}
 }
+
+// installTypesPred keeps LXC/VM install rates free of tool and addon runs.
+const installTypesPred = "type NOT IN ('pve','addon','tool')"
 
 // platformExpr derives the virtualization platform for every row, including
 // legacy rows written before the platform column existed:
@@ -563,8 +576,9 @@ func scanRecords(rows *sql.Rows) []TelemetryRecord {
 	for rows.Next() {
 		var r TelemetryRecord
 		var coreCount, ctType, hasArm uint8
-		var diskSize, ramSize, installDur uint32
+		var diskSize, ramSize, installDur, failedLine uint32
 		var exitCode int16
+		var payloadVersion uint16
 		err := rows.Scan(
 			&r.NSAPP, &r.Type, &r.Status, &r.Method,
 			&coreCount, &ctType, &diskSize, &ramSize,
@@ -574,6 +588,9 @@ func scanRecords(rows *sql.Rows) []TelemetryRecord {
 			&r.CPUVendor, &r.CPUModel,
 			&r.GPUVendor, &r.GPUModel, &r.GPUPassthrough,
 			&r.RAMSpeed, &installDur, &hasArm,
+			&payloadVersion, &r.Arch, &r.FailedCommand, &failedLine,
+			&r.KernelVersion, &r.AppVersion,
+			&r.ErrorMessage, &r.ErrorStep, &r.ErrorPhase, &r.FailedFunction, &r.MigratedFrom,
 			&r.Platform,
 			&r.Created,
 		)
@@ -588,6 +605,11 @@ func scanRecords(rows *sql.Rows) []TelemetryRecord {
 		r.ExitCode = int(exitCode)
 		r.InstallDuration = int(installDur)
 		r.HasArm = hasArm != 0
+		r.PayloadVersion = int(payloadVersion)
+		r.FailedLine = int(failedLine)
+		if needsErrorMessage(r.Status, r.ErrorMessage) {
+			r.ErrorMessage = deriveErrorMessage(r.Error)
+		}
 		out = append(out, r)
 	}
 	return out
@@ -602,6 +624,9 @@ const recordSelectCols = `nsapp, type, status, method,
 	cpu_vendor, cpu_model,
 	gpu_vendor, gpu_model, gpu_passthrough,
 	ram_speed, install_duration, has_arm,
+	payload_version, arch, failed_command, failed_line,
+	kernel_version, app_version,
+	error_message, error_step, error_phase, failed_function, migrated_from,
 	` + platformExpr + ` AS platform_resolved,
 	toString(created)`
 
@@ -633,9 +658,12 @@ func (ch *CHClient) FetchRepoSlugs(ctx context.Context, days int, repoSource str
 func (ch *CHClient) FetchDashboardData(ctx context.Context, days int, repoSource, repoSlug, platform string) (*DashboardData, error) {
 	data := &DashboardData{}
 	mw, ma := chMVWhere(days, repoSource)
-	tw, ta := chWhere(days, repoSource, repoSlug, platform, "status IN ('success','failed','aborted','unknown')")
+	tw, ta := chWhere(days, repoSource, repoSlug, platform, "status IN ('success','failed','aborted','unknown')", installTypesPred)
 	// Materialized views have no platform column — platform filters need raw-table aggregation.
 	rawAgg := repoSlug != "" || platform != ""
+	// Headline, failed apps and the daily chart are install rates; tools and addons are listed separately.
+	iw, ia := chWhere(days, repoSource, repoSlug, platform, installTypesPred)
+	imw := mw + " AND " + installTypesPred
 
 	// ── 1. Main counts ──
 	// "Total" counts DISTINCT installations (one per execution), not raw event
@@ -649,7 +677,7 @@ func (ch *CHClient) FetchDashboardData(ctx context.Context, days int, repoSource
 		SELECT
 			uniqExact(if(execution_id = '', random_id, execution_id)),
 			countIf(status='success'), countIf(status='failed'), countIf(status='aborted')
-		FROM telemetry_db.telemetry WHERE %s`, rw), ra...,
+		FROM telemetry_db.telemetry WHERE %s`, iw), ia...,
 	).Scan(&total, &sc, &fc, &ac)
 	if err != nil {
 		return nil, fmt.Errorf("CH dashboard counts: %w", err)
@@ -896,7 +924,7 @@ func (ch *CHClient) FetchDashboardData(ctx context.Context, days int, repoSource
 			WHERE %s AND nsapp!=''
 			GROUP BY nsapp
 			HAVING f > 0 AND t >= %d
-			ORDER BY toFloat64(f)/t DESC LIMIT 50`, rw, minInstalls), ra...); err == nil {
+			ORDER BY toFloat64(f)/t DESC LIMIT 50`, iw, minInstalls), ia...); err == nil {
 			defer rows.Close()
 			appTotal := make(map[string]int)
 			appFailed := make(map[string]int)
@@ -917,7 +945,7 @@ func (ch *CHClient) FetchDashboardData(ctx context.Context, days int, repoSource
 		WHERE %s AND nsapp!=''
 		GROUP BY nsapp
 		HAVING f > 0 AND t >= %d
-		ORDER BY toFloat64(f)/t DESC LIMIT 50`, mw, minInstalls), ma...); err == nil {
+		ORDER BY toFloat64(f)/t DESC LIMIT 50`, imw, minInstalls), ma...); err == nil {
 		defer rows.Close()
 		appTotal := make(map[string]int)
 		appFailed := make(map[string]int)
@@ -938,7 +966,7 @@ func (ch *CHClient) FetchDashboardData(ctx context.Context, days int, repoSource
 		if rows, err := ch.db.QueryContext(ctx, fmt.Sprintf(`
 			SELECT toString(toDate(created)) d, countIf(status='success') s, countIf(status='failed') f
 			FROM telemetry_db.telemetry WHERE %s
-			GROUP BY toDate(created) ORDER BY toDate(created)`, rw), ra...); err == nil {
+			GROUP BY toDate(created) ORDER BY toDate(created)`, iw), ia...); err == nil {
 			defer rows.Close()
 			sMap := make(map[string]int)
 			fMap := make(map[string]int)
@@ -959,7 +987,7 @@ func (ch *CHClient) FetchDashboardData(ctx context.Context, days int, repoSource
 	} else if rows, err := ch.db.QueryContext(ctx, fmt.Sprintf(`
 		SELECT toString(day) d, sum(success) s, sum(failed) f
 		FROM telemetry_db.mv_daily_stats WHERE %s
-		GROUP BY day ORDER BY day`, mw), ma...); err == nil {
+		GROUP BY day ORDER BY day`, imw), ma...); err == nil {
 		defer rows.Close()
 		sMap := make(map[string]int)
 		fMap := make(map[string]int)
@@ -1559,6 +1587,7 @@ func (ch *CHClient) FetchErrorAnalysisData(ctx context.Context, days int, repoSo
 		type dominantFailure struct {
 			exitCode int
 			error    string
+			message  string
 			category string
 		}
 		byApp := make(map[string]dominantFailure, len(data.AppErrors))
@@ -1568,10 +1597,11 @@ func (ch *CHClient) FetchErrorAnalysisData(ctx context.Context, days int, repoSo
 		dw, da := chWhere(days, repoSource, repoSlug, platform,
 			"status='failed'", "error_category!='user_aborted'", "exit_code!=0", "nsapp!=''")
 		rows, err := ch.db.QueryContext(ctx, fmt.Sprintf(`
-			SELECT nsapp, argMax(ec, n), argMax(err, n), argMax(cat, n)
+			SELECT nsapp, argMax(ec, n), argMax(err, n), argMax(msg, n), argMax(cat, n)
 			FROM (
 				SELECT nsapp, exit_code AS ec, count() AS n,
 					anyIf(error, error!='') AS err,
+					anyIf(error_message, error_message!='') AS msg,
 					anyIf(error_category, error_category NOT IN ('','uncategorized')) AS cat
 				FROM telemetry_db.telemetry WHERE %s
 				GROUP BY nsapp, exit_code
@@ -1587,8 +1617,11 @@ func (ch *CHClient) FetchErrorAnalysisData(ctx context.Context, days int, repoSo
 				var app string
 				var ec int16
 				var d dominantFailure
-				if rows.Scan(&app, &ec, &d.error, &d.category) == nil {
+				if rows.Scan(&app, &ec, &d.error, &d.message, &d.category) == nil {
 					d.exitCode = int(ec)
+					if d.message == "" {
+						d.message = deriveErrorMessage(d.error)
+					}
 					byApp[app] = d
 				}
 			}
@@ -1598,6 +1631,7 @@ func (ch *CHClient) FetchErrorAnalysisData(ctx context.Context, days int, repoSo
 			if d, ok := byApp[data.AppErrors[i].App]; ok {
 				data.AppErrors[i].TopExitCode = d.exitCode
 				data.AppErrors[i].TopError = d.error
+				data.AppErrors[i].TopMessage = d.message
 				data.AppErrors[i].TopCategory = d.category
 			}
 		}
@@ -1640,40 +1674,29 @@ func (ch *CHClient) FetchErrorAnalysisData(ctx context.Context, days int, repoSo
 		}
 	}
 
-	// Failure signatures: group by the exact failing command from the v3
-	// structured error header ("… | at line L: <cmd>"). Answers "WHICH command
-	// breaks most often, across which apps" — far more actionable than exit codes.
-	//
-	// Two of those values are not commands and are excluded below. The engine
-	// writes "unknown" when the ERR trap had no BASH_COMMAND to record, and a
-	// bare "return N" is what the trap sees when a helper propagates a failure
-	// that happened earlier — by then the frame has been popped and the name of
-	// the function that returned is gone. Both group enormously: over fourteen
-	// days "unknown" was the single largest signature at 216 across 66 apps,
-	// with return 7, return 22 and return 250 adding 330 more between them. That
-	// is more than half the visible list saying nothing, pushing real signatures
-	// off the end of it. These failures still count in the exit-code and
-	// category breakdowns; they just are not signatures.
+	// Failure signatures: the error_message, or for older rows the failing command
+	// from the header. "unknown" and "return N" say nothing about what broke.
 	sigW, sigA := chWhere(days, repoSource, repoSlug, platform,
-		"status='failed'", "error_category!='user_aborted'", "error != ''")
+		"status='failed'", "error_category!='user_aborted'", "(error != '' OR error_message != '')")
 	if rows, err := ch.db.QueryContext(ctx, fmt.Sprintf(`
 		SELECT
-			extract(error, 'at line [0-9]+: ([^\n|]{1,200})') AS cmd,
+			if(error_message != '', 'message', 'command') AS kind,
+			if(error_message != '', error_message,
+				extract(error, 'at line [0-9]+: ([^\n|]{1,200})')) AS sig,
 			count() c,
 			uniqExact(nsapp) ua,
 			topK(1)(exit_code) tec,
 			arrayStringConcat(arraySlice(groupUniqArray(nsapp),1,5),', ') apps
 		FROM telemetry_db.telemetry
-		-- return is how a failure is passed up, not what broke.
-		WHERE %s AND cmd != '' AND cmd != 'unknown'
-			AND NOT (cmd = 'return' OR startsWith(cmd, 'return '))
-		GROUP BY cmd ORDER BY c DESC LIMIT 20`, sigW), sigA...); err == nil {
+		WHERE %s AND sig != ''
+			AND (kind = 'message' OR (sig != 'unknown' AND NOT (sig = 'return' OR startsWith(sig, 'return '))))
+		GROUP BY kind, sig ORDER BY c DESC LIMIT 20`, sigW), sigA...); err == nil {
 		defer rows.Close()
 		for rows.Next() {
 			var sig ErrorSignature
 			var c, ua uint64
 			var tec []int16
-			if rows.Scan(&sig.Command, &c, &ua, &tec, &sig.Apps) == nil {
+			if rows.Scan(&sig.Kind, &sig.Command, &c, &ua, &tec, &sig.Apps) == nil {
 				sig.Count = int(c)
 				sig.UniqueApps = int(ua)
 				if len(tec) > 0 {
@@ -1689,7 +1712,8 @@ func (ch *CHClient) FetchErrorAnalysisData(ctx context.Context, days int, repoSo
 	if rows, err := ch.db.QueryContext(ctx, fmt.Sprintf(`
 		SELECT nsapp, type, status, exit_code, error, error_category,
 			os_type, os_version, pve_version, %s AS plat,
-			execution_id, install_duration, toString(created)
+			execution_id, install_duration, toString(created),
+			error_message, error_step, error_phase, failed_function
 		FROM telemetry_db.telemetry WHERE %s
 		ORDER BY created DESC LIMIT 100`, platformExpr, rwErr), raErr...); err == nil {
 		defer rows.Close()
@@ -1699,8 +1723,12 @@ func (ch *CHClient) FetchErrorAnalysisData(ctx context.Context, days int, repoSo
 			var dur uint32
 			if rows.Scan(&er.NSAPP, &er.Type, &er.Status, &ec, &er.Error, &er.ErrorCategory,
 				&er.OsType, &er.OsVersion, &er.PveVer, &er.Platform,
-				&er.ExecutionID, &dur, &er.Created) == nil {
+				&er.ExecutionID, &dur, &er.Created,
+				&er.ErrorMessage, &er.ErrorStep, &er.ErrorPhase, &er.FailedFunction) == nil {
 				er.ExitCode = int(ec)
+				if needsErrorMessage(er.Status, er.ErrorMessage) {
+					er.ErrorMessage = deriveErrorMessage(er.Error)
+				}
 				er.InstallDuration = int(dur)
 				data.RecentErrors = append(data.RecentErrors, er)
 			}
@@ -1773,12 +1801,12 @@ func latestStatusSQL(status string) (string, []interface{}) {
 	switch status {
 	case "aborted":
 		return `(status='aborted' OR (status='failed' AND (exit_code IN (129,130)
-			OR positionCaseInsensitive(error,'SIGINT')>0 OR positionCaseInsensitive(error,'SIGHUP')>0
-			OR positionCaseInsensitive(error,'Ctrl+C')>0 OR positionCaseInsensitive(error,'Ctrl-C')>0)))`, nil
+			OR (payload_version < 3 AND (positionCaseInsensitive(error,'SIGINT')>0 OR positionCaseInsensitive(error,'SIGHUP')>0
+			OR positionCaseInsensitive(error,'Ctrl+C')>0 OR positionCaseInsensitive(error,'Ctrl-C')>0)))))`, nil
 	case "failed":
 		return `(status='failed' AND exit_code NOT IN (129,130)
-			AND positionCaseInsensitive(error,'SIGINT')=0 AND positionCaseInsensitive(error,'SIGHUP')=0
-			AND positionCaseInsensitive(error,'Ctrl+C')=0 AND positionCaseInsensitive(error,'Ctrl-C')=0)`, nil
+			AND (payload_version >= 3 OR (positionCaseInsensitive(error,'SIGINT')=0 AND positionCaseInsensitive(error,'SIGHUP')=0
+			AND positionCaseInsensitive(error,'Ctrl+C')=0 AND positionCaseInsensitive(error,'Ctrl-C')=0)))`, nil
 	default:
 		return "status = ?", []interface{}{status}
 	}
@@ -1867,7 +1895,7 @@ func (ch *CHClient) FetchRecordsPaginated(ctx context.Context, page, limit int,
 	// Count distinct installations (not raw event rows).
 	countQ := fmt.Sprintf(`
 		WITH ranked AS (
-			SELECT status, exit_code, error,
+			SELECT status, exit_code, error, payload_version,
 				row_number() OVER (
 					PARTITION BY if(execution_id = '', random_id, execution_id)
 					ORDER BY %s

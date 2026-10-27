@@ -419,7 +419,7 @@ function logRows() {
     (!f.platform || r.platform === f.platform) &&
     (!f.os || r.os === f.os) &&
     (!f.cat || r.category === f.cat) &&
-    (!q || [r.app, r.os, r.error, r.failed_command, r.category, r.platform,
+    (!q || [r.app, r.os, r.error, r.error_message, r.error_step, r.failed_command, r.category, r.platform,
             r.type, r.repo, r.host_version]
       .some(v => String(v || "").toLowerCase().includes(q))));
 }
@@ -445,7 +445,8 @@ function renderLog() {
       <td class="note">${esc(r.host_version || "—")}</td>
       <td class="note">${r.cores ? `${r.cores}C · ${r.ram}M · ${r.disk}G` : "—"}</td>
       <td class="num">${dur(r.duration)}</td>
-      <td><code>${esc((r.failed_command || r.error || "").slice(0, 90))}</code>${
+      <td>${r.error_message ? esc(r.error_message.slice(0, 90))
+        : `<code>${esc((r.failed_command || r.error || "").slice(0, 90))}</code>`}${
         r.category ? ` <span class="pill idle">${esc(r.category)}</span>` : ""}</td>
     </tr>`).join("")}</table>`
     : `<div class="empty">${(DATA.recent || []).length
@@ -466,9 +467,11 @@ function openDetail(r) {
 
   const groups = [
     ["Outcome", [
+      ["Error", r.error_message],
       ["Status", r.status], ["Exit code", r.exit_code],
-      ["Category", r.category], ["Duration", dur(r.duration)],
-      ["Last seen", r.last_seen],
+      ["Category", r.category], ["Step", r.error_step],
+      ["Phase", r.error_phase], ["Function", r.failed_function],
+      ["Duration", dur(r.duration)], ["Last seen", r.last_seen],
     ]],
     ["Script", [
       ["Application", r.app], ["Type", r.type], ["Method", r.method],
@@ -519,7 +522,8 @@ function exportCsv() {
   if (!rows.length) return;
   const cols = ["last_seen", "status", "exit_code", "category", "app", "type",
     "platform", "os", "host_version", "arch", "repo", "method", "cores", "ram",
-    "disk", "privileged", "duration", "failed_command", "failed_line",
+    "disk", "privileged", "duration", "error_message", "error_step", "error_phase",
+    "failed_function", "failed_command", "failed_line",
     "kernel_version", "app_version", "payload_version", "error"];
   const cell = v => {
     const t = String(v ?? "");

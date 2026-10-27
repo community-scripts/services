@@ -83,7 +83,9 @@ const sample = {
     last_seen: "2026-08-18 09:00", error: "boom", failed_command: "apk add foo",
     failed_line: 42, arch: "amd64", kernel_version: "6.8", app_version: "1.0",
     cpu_vendor: "AMD", cpu_model: "EPYC", gpu_vendor: "", gpu_model: "",
-    gpu_passthrough: "no", ram_speed: "3200", payload_version: 2,
+    gpu_passthrough: "no", ram_speed: "3200", payload_version: 3,
+    error_message: "E: Unable to locate package foo", error_step: "Installing dependencies",
+    error_phase: "container", failed_function: "setup_deps",
   }],
 };
 
@@ -110,6 +112,7 @@ const checks = [
   ["exit_codes", "command not found"],
   ["signatures", "curl failed"],
   ["recent", "valkey"],
+  ["recent", "Unable to locate package foo"],
   ["live_now", "valkey"],
 ];
 for (const [id, needle] of checks) {
@@ -119,7 +122,8 @@ for (const [id, needle] of checks) {
 }
 
 openDetail(sample.recent[0]);
-for (const needle of ["Exit code", "apk add foo", "Payload version", "alpine 3.24"]) {
+for (const needle of ["Exit code", "apk add foo", "Payload version", "alpine 3.24",
+  "Unable to locate package foo", "Installing dependencies", "setup_deps"]) {
   if (!String(store.mBody?.innerHTML || "").includes(needle)) {
     fail(`the detail dialog is missing ${JSON.stringify(needle)}`);
   }

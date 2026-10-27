@@ -83,6 +83,9 @@ type Config struct {
 	GitHubOwner   string // Repository owner (e.g., "community-scripts")
 	GitHubRepo    string // Repository name (e.g., "ProxmoxVE")
 	AdminPassword string // Password to protect admin actions (issue creation)
+
+	// AdminToken guards /api/admin/*; unset disables those endpoints.
+	AdminToken string
 }
 
 // TelemetryIn matches payload from api.func (bash client)
@@ -162,6 +165,12 @@ type TelemetryIn struct {
 	// anything transmitted them.
 	KernelVersion string `json:"kernel_version,omitempty"`
 	AppVersion    string `json:"app_version,omitempty"`
+
+	// Payload version 3: what failed, in which step, on which side, in which function.
+	ErrorMessage   string `json:"error_message,omitempty"`
+	ErrorStep      string `json:"error_step,omitempty"`
+	ErrorPhase     string `json:"error_phase,omitempty"`
+	FailedFunction string `json:"failed_function,omitempty"`
 }
 
 // TelemetryOut is the output shape for telemetry records
@@ -214,6 +223,12 @@ type TelemetryOut struct {
 	FailedLine     int    `json:"failed_line,omitempty"`
 	KernelVersion  string `json:"kernel_version,omitempty"`
 	AppVersion     string `json:"app_version,omitempty"`
+
+	ErrorMessage   string `json:"error_message,omitempty"`
+	ErrorStep      string `json:"error_step,omitempty"`
+	ErrorPhase     string `json:"error_phase,omitempty"`
+	FailedFunction string `json:"failed_function,omitempty"`
+	MigratedFrom   string `json:"migrated_from,omitempty"`
 }
 
 // TelemetryStatusUpdate contains only fields needed for status updates
@@ -630,16 +645,8 @@ var (
 	// Allowed values for 'status' field
 	allowedStatus = map[string]bool{"installing": true, "validation": true, "configuring": true, "success": true, "failed": true, "aborted": true, "unknown": true}
 
-	// Allowed values for 'os_type' field
-	allowedOsType = map[string]bool{
-		"debian": true, "ubuntu": true, "alpine": true, "devuan": true,
-		"fedora": true, "rocky": true, "alma": true, "centos": true,
-		"opensuse": true, "gentoo": true, "openeuler": true,
-		// VM-specific OS types
-		"homeassistant": true, "opnsense": true, "openwrt": true,
-		"mikrotik": true, "umbrel-os": true, "pimox-haos": true,
-		"owncloud": true, "turnkey-nextcloud": true, "arch-linux": true,
-	}
+	// Shape of 'os_type'. The engine also builds from the linuxcontainers.org catalog, so no fixed list.
+	osTypeRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,31}$`)
 
 	// Allowed values for 'gpu_vendor' field
 	allowedGPUVendor = map[string]bool{"intel": true, "amd": true, "nvidia": true, "unknown": true, "": true}
@@ -686,9 +693,9 @@ var (
 	}{
 		// --- Generic / Shell ---
 		0:  {"Cancelled before completion (no error)", ""},
-		1:  {"General error / Operation not permitted", "unknown"},
-		2:  {"Misuse of shell builtins (e.g. syntax error)", "unknown"},
-		3:  {"General syntax or argument error", "unknown"},
+		1:  {"General error", "unknown"},
+		2:  {"Invalid usage or arguments", "unknown"},
+		3:  {"Command-specific error", "unknown"},
 		10: {"Docker / privileged mode required (unsupported environment)", "config"},
 		// --- curl / wget errors ---
 		4:  {"curl: Feature not supported or protocol error", "unknown"},
@@ -747,7 +754,7 @@ var (
 		112: {"Proxmox: Invalid install menu option", "config"},
 		113: {"LXC: Under-provisioned — user aborted update", "user_aborted"},
 		114: {"LXC: Storage too low — user aborted update", "user_aborted"},
-		115: {"Download: install.func download failed or incomplete", "network"},
+		115: {"Engine or install script could not be downloaded", "network"},
 		116: {"Proxmox: Default bridge vmbr0 not found", "config"},
 		117: {"LXC: Container did not reach running state", "proxmox"},
 		118: {"LXC: No IP assigned to container after timeout", "timeout"},
@@ -757,7 +764,7 @@ var (
 		122: {"LXC: No internet connectivity — user declined to continue", "user_aborted"},
 		123: {"LXC: Local IP detection failed", "network"},
 		// --- BSD sysexits.h (64-78) ---
-		64: {"Usage error (wrong arguments)", "config"},
+		64: {"Missing or invalid input (a required setting was not given)", "config"},
 		65: {"Data format error (bad input data)", "unknown"},
 		66: {"Input file not found (cannot open input)", "unknown"},
 		67: {"User not found (addressee unknown)", "unknown"},
@@ -913,28 +920,26 @@ func containsAny(haystack string, needles ...string) bool {
 	return false
 }
 
-// errDiagnosticHeader matches the header the engine puts in front of the real
-// error text. It comes in two shapes, and both have to be handled:
-//
-//	exit_code=1 | General error / Operation not permitted | at line 23: npm …
-//	exit_code=1 | General error / Operation not permitted\n---\nCreating filesyst…
-//
-// The second occurs whenever the ERR trap had no command to record, and it is
-// common: five of eighteen exit-1 samples pulled from the live API. Requiring
-// the third field would have left those still matching on the description.
-var errDiagnosticHeader = regexp.MustCompile(`^exit_code=\d+\s*\|[^|\n]*(\|\s*)?`)
+var (
+	errHeaderStart   = regexp.MustCompile(`^exit_code=\d+`)
+	errHeaderCommand = regexp.MustCompile(`\| at line \d+: (.*)$`)
+)
 
-// stripDiagnosticHeader removes that header before any keyword matching below.
-//
-// The middle field is our own description of the exit code, not evidence about
-// what happened, and matching keywords against it was actively wrong. Exit 1 is
-// described as "General error / Operation not permitted", which contains
-// "operation not permitted" -- so every exit-1 failure was filed as a permission
-// problem. Over fourteen days that was 944 of 5165 errors, the largest single
-// category on the dashboard, and none of them had anything to do with
-// permissions; the record that surfaced it was a failing `npm install -g`.
+// stripDiagnosticHeader drops the engine's "exit_code=N | …" first line, which
+// is our own description and not evidence, keeping only the failing command and
+// the output below it. Legacy container traces put everything on one line after "|---|".
 func stripDiagnosticHeader(s string) string {
-	return errDiagnosticHeader.ReplaceAllString(s, "")
+	if !errHeaderStart.MatchString(s) {
+		return s
+	}
+	first, rest, _ := strings.Cut(s, "\n")
+	if head, legacy, ok := strings.Cut(first, "|---|"); ok {
+		first, rest = head, strings.ReplaceAll(legacy, "|", "\n")+"\n"+rest
+	}
+	if m := errHeaderCommand.FindStringSubmatch(first); m != nil {
+		rest = m[1] + "\n" + rest
+	}
+	return rest
 }
 
 // deriveErrorCategory is the authoritative server-side error categorization.
@@ -978,14 +983,15 @@ func deriveErrorCategory(code int, errText string) string {
 	return "unknown"
 }
 
-// isAbortSignal reports whether a "failed" outcome is really a user-initiated
-// abort (Ctrl+C / SIGINT, terminal close / SIGHUP, or an explicit user-cancel
-// message) and should be reclassified as "aborted" rather than counted as a
-// failure. Used both at ingest time and when reading records back, so the two
-// paths can never diverge.
-func isAbortSignal(exitCode int, errText string) bool {
+// isAbortSignal reports whether a "failed" outcome is really a user abort.
+// Used at ingest and at read time so the two paths cannot diverge.
+func isAbortSignal(payloadVersion, exitCode int, errText string) bool {
 	if exitCode == 129 || exitCode == 130 {
 		return true
+	}
+	// v3 clients map aborts themselves; their traces quote logs like "press Ctrl+C".
+	if payloadVersion >= 3 {
+		return false
 	}
 	e := strings.ToLower(errText)
 	return containsAny(e, "sigint", "ctrl+c", "ctrl-c", "sighup",
@@ -1052,7 +1058,7 @@ func sanitizeShort(s string, max int) string {
 	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.ReplaceAll(s, "\r", " ")
 	if len(s) > max {
-		s = s[:max]
+		s = strings.ToValidUTF8(s[:max], "")
 	}
 	return s
 }
@@ -1071,8 +1077,8 @@ func sanitizeMultiLine(s string, max int) string {
 	return s
 }
 
-// ipv4Re matches IPv4 addresses (e.g. 192.168.1.100) for GDPR anonymization.
-var ipv4Re = regexp.MustCompile(`(\d{1,3}\.)\d{1,3}\.\d{1,3}`)
+// ipv4Re matches four-octet IPv4 addresses only, so version strings like 0.9.5 survive.
+var ipv4Re = regexp.MustCompile(`\b(\d{1,3})\.\d{1,3}\.\d{1,3}\.\d{1,3}\b`)
 
 // numericFieldSuffixRe matches JSON numeric fields with unit suffixes like 32G, 100M.
 // Captures: "field_name": 123G â†’ replace with "field_name": 123
@@ -1196,6 +1202,10 @@ func rescueBrokenJSON(raw []byte) (TelemetryIn, error) {
 	in.FailedCommand = strField("failed_command")
 	in.KernelVersion = strField("kernel_version")
 	in.AppVersion = strField("app_version")
+	in.ErrorPhase = strField("error_phase")
+	in.FailedFunction = strField("failed_function")
+	in.ErrorMessage = escapedStrField(s, "error_message")
+	in.ErrorStep = escapedStrField(s, "error_step")
 
 	in.CTType = intField("ct_type")
 	in.DiskSize = intField("disk_size")
@@ -1220,7 +1230,8 @@ func rescueBrokenJSON(raw []byte) (TelemetryIn, error) {
 		valueStart := eloc[1]
 		// Find the boundary: the next known field after "error"
 		// Pattern in the JSON: ...error content...",\n    "error_category": "..."
-		boundaryFields := []string{"error_category", "install_duration", "cpu_vendor", "gpu_vendor", "ram_speed", "repo_source"}
+		boundaryFields := []string{"error_category", "error_message", "error_step", "error_phase", "failed_function",
+			"install_duration", "cpu_vendor", "gpu_vendor", "ram_speed", "repo_source"}
 		endPos := -1
 		for _, field := range boundaryFields {
 			re := regexp.MustCompile(`",?\s*\n\s*"` + regexp.QuoteMeta(field) + `"`)
@@ -1256,13 +1267,27 @@ func rescueBrokenJSON(raw []byte) (TelemetryIn, error) {
 	return in, nil
 }
 
+// escapedStrField extracts a JSON string value that may contain escaped quotes.
+func escapedStrField(s, name string) string {
+	re := regexp.MustCompile(`"` + regexp.QuoteMeta(name) + `"\s*:\s*"((?:[^"\\]|\\.)*)"`)
+	m := re.FindStringSubmatch(s)
+	if len(m) < 2 {
+		return ""
+	}
+	var v string
+	if json.Unmarshal([]byte(`"`+m[1]+`"`), &v) == nil {
+		return v
+	}
+	return m[1]
+}
+
 // sanitizeIPs anonymizes IPv4 addresses in log text for GDPR compliance.
-// Keeps the first octet visible for debugging (e.g. "192.x.x"), strips the rest.
+// Keeps the first octet visible for debugging (e.g. "192.x.x.x"), strips the rest.
 func sanitizeIPs(s string) string {
 	if s == "" {
 		return s
 	}
-	return ipv4Re.ReplaceAllString(s, "${1}x.x")
+	return ipv4Re.ReplaceAllString(s, "${1}.x.x.x")
 }
 
 func validate(in *TelemetryIn) error {
@@ -1297,9 +1322,18 @@ func validate(in *TelemetryIn) error {
 	in.KernelVersion = sanitizeShort(in.KernelVersion, 64)
 	in.AppVersion = sanitizeShort(in.AppVersion, 64)
 	// Long enough for a real command, short enough to group on.
-	in.FailedCommand = sanitizeShort(in.FailedCommand, 512)
+	in.FailedCommand = sanitizeShort(sanitizeIPs(in.FailedCommand), 512)
 	if in.FailedLine < 0 || in.FailedLine > 1_000_000 {
 		in.FailedLine = 0
+	}
+
+	in.ErrorMessage = sanitizeShort(sanitizeIPs(in.ErrorMessage), 300)
+	in.ErrorStep = sanitizeShort(sanitizeIPs(in.ErrorStep), 120)
+	in.FailedFunction = sanitizeShort(in.FailedFunction, 64)
+	in.ErrorPhase = strings.ToLower(sanitizeShort(in.ErrorPhase, 16))
+	if in.ErrorPhase != "" && in.ErrorPhase != "host" && in.ErrorPhase != "container" {
+		log.Printf("[WARN] unknown error_phase %q from nsapp=%s, dropping it", in.ErrorPhase, in.NSAPP)
+		in.ErrorPhase = ""
 	}
 	// A version the server has never heard of is more likely a typo or a probe
 	// than a client from the future.
@@ -1349,7 +1383,7 @@ func validate(in *TelemetryIn) error {
 	}
 
 	// Allow longer error text to capture full installation log + anonymize IPs (GDPR)
-	in.Error = sanitizeIPs(sanitizeMultiLine(in.Error, 131072))
+	in.Error = sanitizeMultiLine(sanitizeIPs(in.Error), 131072)
 
 	// Required fields for all requests
 	if in.RandomID == "" || in.Type == "" || in.NSAPP == "" || in.Status == "" {
@@ -1394,12 +1428,13 @@ func validate(in *TelemetryIn) error {
 	isUpdate := in.Status != "installing"
 
 	// os_type: normalize "-" (used by VM scripts for "not applicable") to empty
+	in.OsType = strings.ToLower(in.OsType)
 	if in.OsType == "-" || in.OsType == "none" {
 		in.OsType = ""
 	}
-	// os_type is optional but if provided must be valid (only for lxc/vm)
-	if (in.Type == "lxc" || in.Type == "vm") && in.OsType != "" && !allowedOsType[in.OsType] {
-		return errors.New("invalid os_type")
+	if in.OsType != "" && !osTypeRe.MatchString(in.OsType) {
+		log.Printf("[WARN] malformed os_type %q from nsapp=%s, dropping it", in.OsType, in.NSAPP)
+		in.OsType = ""
 	}
 
 	// method is optional and flexible - just sanitized, no strict validation
@@ -1433,6 +1468,46 @@ func validate(in *TelemetryIn) error {
 	}
 
 	return nil
+}
+
+// classifyIngest settles status, category and error text of a validated record.
+// The server's category wins when it is sure; otherwise the client's is kept.
+func classifyIngest(in *TelemetryIn, verbose bool) {
+	if in.Status == "failed" && in.ExitCode == 0 {
+		in.Status = "success"
+		in.Error = ""
+		in.ErrorCategory = ""
+		in.ErrorMessage, in.ErrorPhase, in.FailedFunction = "", "", ""
+		if verbose {
+			log.Printf("auto-reclassified exit_code=0 as success: nsapp=%s", in.NSAPP)
+		}
+	}
+
+	if in.Status == "failed" && isAbortSignal(in.PayloadVersion, in.ExitCode, in.Error) {
+		in.Status = "aborted"
+		if in.ErrorCategory == "" || in.ErrorCategory == "unknown" {
+			in.ErrorCategory = "user_aborted"
+		}
+		if verbose {
+			log.Printf("auto-reclassified as aborted: nsapp=%s exit_code=%d", in.NSAPP, in.ExitCode)
+		}
+	}
+
+	if in.Status == "failed" {
+		if serverCat := deriveErrorCategory(in.ExitCode, in.Error); serverCat != "unknown" && serverCat != "" {
+			in.ErrorCategory = serverCat
+		} else if in.ErrorCategory == "" {
+			in.ErrorCategory = "unknown"
+		}
+	}
+
+	if in.Status == "failed" && in.Error == "" && in.ExitCode != 0 {
+		in.Error = fmt.Sprintf("Exit code %d: %s", in.ExitCode, getExitCodeDescription(in.ExitCode))
+	}
+
+	if needsErrorMessage(in.Status, in.ErrorMessage) {
+		in.ErrorMessage = deriveErrorMessage(in.Error)
+	}
 }
 
 // -------- HTTP server --------
@@ -1500,11 +1575,12 @@ func main() {
 		GitHubOwner:   env("GITHUB_OWNER", "community-scripts"),
 		GitHubRepo:    env("GITHUB_REPO", "ProxmoxVE"),
 		AdminPassword: env("ADMIN_PASSWORD", ""),
+		AdminToken:    env("TELEMETRY_ADMIN_TOKEN", ""),
 	}
 
 	// Debug: log whether critical env vars are set (not the values!)
-	log.Printf("CONFIG: ADMIN_PASSWORD set=%v (len=%d), GITHUB_TOKEN set=%v, GITHUB_OWNER=%s, GITHUB_REPO=%s",
-		cfg.AdminPassword != "", len(cfg.AdminPassword), cfg.GitHubToken != "", cfg.GitHubOwner, cfg.GitHubRepo)
+	log.Printf("CONFIG: ADMIN_PASSWORD set=%v (len=%d), TELEMETRY_ADMIN_TOKEN set=%v, GITHUB_TOKEN set=%v, GITHUB_OWNER=%s, GITHUB_REPO=%s",
+		cfg.AdminPassword != "", len(cfg.AdminPassword), cfg.AdminToken != "", cfg.GitHubToken != "", cfg.GitHubOwner, cfg.GitHubRepo)
 
 	var pt *ProxyTrust
 	if strings.TrimSpace(env("TRUSTED_PROXIES_CIDR", "")) != "" {
@@ -1904,7 +1980,7 @@ func main() {
 
 		// Auto-reclassify old records that have status=failed but are actually user aborts
 		for i := range records {
-			if records[i].Status == "failed" && isAbortSignal(records[i].ExitCode, records[i].Error) {
+			if records[i].Status == "failed" && isAbortSignal(records[i].PayloadVersion, records[i].ExitCode, records[i].Error) {
 				records[i].Status = "aborted"
 			}
 		}
@@ -2319,6 +2395,8 @@ func main() {
 		})
 	})
 
+	mux.HandleFunc("/api/admin/migrate-script", migrateScriptHandler(cfg.AdminToken, ch, cache.InvalidateDashboard))
+
 	// GitHub Issue creation API
 	mux.HandleFunc("/api/github/create-issue", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -2486,56 +2564,7 @@ func main() {
 			return
 		}
 
-		// Auto-reclassify: exit_code=0 is NEVER an error — always reclassify as success
-		if in.Status == "failed" && in.ExitCode == 0 {
-			in.Status = "success"
-			in.Error = ""
-			in.ErrorCategory = ""
-			if cfg.EnableReqLogging {
-				log.Printf("auto-reclassified exit_code=0 as success: nsapp=%s", in.NSAPP)
-			}
-		}
-
-		// Auto-reclassify: addon and pve type failures â†’ success (excluded from failure stats)
-		if in.Status == "failed" && (in.Type == "addon" || in.Type == "pve") {
-			in.Status = "success"
-			in.Error = ""
-			in.ErrorCategory = ""
-			in.ExitCode = 0
-			if cfg.EnableReqLogging {
-				log.Printf("auto-reclassified %s failure as success: nsapp=%s", in.Type, in.NSAPP)
-			}
-		}
-
-		// Auto-reclassify: clients still send status="failed" for SIGINT/Ctrl+C and SIGHUP,
-		// detect and reclassify as "aborted" server-side.
-		if in.Status == "failed" && isAbortSignal(in.ExitCode, in.Error) {
-			in.Status = "aborted"
-			if in.ErrorCategory == "" || in.ErrorCategory == "unknown" {
-				in.ErrorCategory = "user_aborted"
-			}
-			if cfg.EnableReqLogging {
-				log.Printf("auto-reclassified as aborted: nsapp=%s exit_code=%d", in.NSAPP, in.ExitCode)
-			}
-		}
-
-		// Authoritative error categorization: the server is the single source of
-		// truth. When the server can confidently derive a category (from exit code
-		// or error text), it overrides whatever the client sent so that client/server
-		// mappings can never diverge. Only when the server is unsure do we keep the
-		// client's category (it may have had extra local context).
-		if in.Status == "failed" {
-			if serverCat := deriveErrorCategory(in.ExitCode, in.Error); serverCat != "unknown" && serverCat != "" {
-				in.ErrorCategory = serverCat
-			} else if in.ErrorCategory == "" {
-				in.ErrorCategory = "unknown"
-			}
-		}
-
-		// Enrich error text with exit code description if error text is empty
-		if in.Status == "failed" && in.Error == "" && in.ExitCode != 0 {
-			in.Error = fmt.Sprintf("Exit code %d: %s", in.ExitCode, getExitCodeDescription(in.ExitCode))
-		}
+		classifyIngest(&in, cfg.EnableReqLogging)
 
 		// Map input to telemetry schema
 		out := TelemetryOut{
@@ -2572,6 +2601,10 @@ func main() {
 			FailedLine:      in.FailedLine,
 			KernelVersion:   in.KernelVersion,
 			AppVersion:      in.AppVersion,
+			ErrorMessage:    in.ErrorMessage,
+			ErrorStep:       in.ErrorStep,
+			ErrorPhase:      in.ErrorPhase,
+			FailedFunction:  in.FailedFunction,
 		}
 
 		// Enqueue for async PB write (decoupled from HTTP response)

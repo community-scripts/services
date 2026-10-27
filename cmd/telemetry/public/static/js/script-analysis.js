@@ -269,7 +269,7 @@ function renderScriptDetail(d, days) {
   // Recent installations
   html += '<div class="sd-section"><h3>Recent Installations</h3>';
   if (d.recent && d.recent.length) {
-    html += '<table class="sd-table"><thead><tr><th>Status</th><th>Platform</th><th>Exit</th><th>OS</th><th>Duration</th><th>Time</th></tr></thead><tbody>';
+    html += '<table class="sd-table"><thead><tr><th>Status</th><th>Platform</th><th>Exit</th><th>Error</th><th>OS</th><th>Duration</th><th>Time</th></tr></thead><tbody>';
     d.recent.forEach(r => {
       const dur = r.install_duration ? (r.install_duration < 60 ? r.install_duration + 's' : Math.floor(r.install_duration / 60) + 'm') : '-';
       const os = r.os_type ? r.os_type + (r.os_version ? ' ' + r.os_version : '') : '-';
@@ -277,6 +277,7 @@ function renderScriptDetail(d, days) {
         '<td><span class="status-badge ' + (r.status || 'unknown') + '">' + escapeHtml(r.status) + '</span></td>' +
         '<td>' + platformBadge(r.platform) + '</td>' +
         '<td>' + (r.exit_code ? '<span class="exit-code err">' + r.exit_code + '</span>' : '<span class="exit-code ok">0</span>') + '</td>' +
+        '<td style="max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escapeHtml([r.error_message, r.error_step].filter(Boolean).join(' — ')) + '">' + escapeHtml(r.error_message || '-') + '</td>' +
         '<td>' + escapeHtml(os) + '</td>' +
         '<td>' + dur + '</td>' +
         '<td style="white-space:nowrap;">' + formatTimestamp(r.created) + '</td>' +

@@ -56,6 +56,12 @@ All data is **purely technical** and **anonymous**. No field can identify a natu
 | `status` | `success`, `failed` | Whether the installation succeeded |
 | `exit_code` | `0`, `1`, `130` | Exit code for error categorization |
 | `error` | `dpkg: error ...` | Truncated error message (failed installs only) |
+| `error_message` | `Failed to download GPG key for grafana` | One line saying what failed, taken from the script's own messages or output (failed installs only) |
+| `error_step` | `Setting up Grafana Repository` | The step that was running (failed or aborted installs) |
+| `error_phase` | `host`, `container` | Whether it failed on the host or inside the container |
+| `failed_command`, `failed_function` | `apt-get install -y foo`, `setup_uv` | The failing command and the script function it ran in |
+
+IPv4 addresses in `error`, `error_message`, `error_step` and `failed_command` are anonymised before storage (`192.168.1.10` becomes `192.x.x.x`).
 | `ct_type` | `1` (unprivileged) | Container privilege type |
 | `disk_size` | `8` | Disk size in GB |
 | `core_count` | `2` | Number of CPU cores |
