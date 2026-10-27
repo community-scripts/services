@@ -156,3 +156,18 @@ func serveCachedJSON[T any](w http.ResponseWriter, r *http.Request, c *Cache, en
 	w.Header().Set("X-Cache", "MISS")
 	_ = json.NewEncoder(w).Encode(data)
 }
+
+// CausesResponse is the body of /api/causes.
+type CausesResponse struct {
+	Days    int     `json:"days"`
+	Causes  []Cause `json:"causes"`
+	Updated string  `json:"updated"`
+}
+
+// AppErrorsResponse is the body of /api/app-errors.
+type AppErrorsResponse struct {
+	Days    int            `json:"days"`
+	MinRuns int            `json:"min_runs"`
+	Apps    []AppErrorStat `json:"apps"`
+	Updated string         `json:"updated"`
+}

@@ -1899,6 +1899,46 @@ func main() {
 			func(ctx context.Context) (*ErrorAnalysisData, error) { return ch.FetchErrorAnalysisData(ctx, f) })
 	})
 
+	mux.HandleFunc("/api/causes", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		f, err := parseRunFilter(q, 7, 365, "")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		limit := parseLimit(q.Get("limit"), 50, 200)
+		full := q.Get("examples") == "full"
+		key := fmt.Sprintf("%s&limit=%d&full=%t", f.cacheKey("causes"), limit, full)
+		serveCachedJSON(w, r, cache, cfg.CacheEnabled, key, errorsTTL(f.Days), errorsTimeout(f.Days),
+			func(ctx context.Context) (*CausesResponse, error) {
+				causes, err := ch.FetchCauses(ctx, f, limit, full)
+				if err != nil {
+					return nil, err
+				}
+				return &CausesResponse{Days: f.Days, Causes: causes, Updated: time.Now().UTC().Format(time.RFC3339)}, nil
+			})
+	})
+
+	mux.HandleFunc("/api/app-errors", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		f, err := parseRunFilter(q, 7, 365, "")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		limit := parseLimit(q.Get("limit"), 100, 500)
+		key := fmt.Sprintf("%s&limit=%d", f.cacheKey("apperrors"), limit)
+		serveCachedJSON(w, r, cache, cfg.CacheEnabled, key, errorsTTL(f.Days), errorsTimeout(f.Days),
+			func(ctx context.Context) (*AppErrorsResponse, error) {
+				apps, err := ch.FetchAppStats(ctx, f, true, limit)
+				if err != nil {
+					return nil, err
+				}
+				return &AppErrorsResponse{Days: f.Days, MinRuns: minRunsForRate(f.Days), Apps: apps,
+					Updated: time.Now().UTC().Format(time.RFC3339)}, nil
+			})
+	})
+
 	// Repository slug list for fork-specific filtering (owner/repo)
 	mux.HandleFunc("/api/repo-slugs", func(w http.ResponseWriter, r *http.Request) {
 		days := 30
