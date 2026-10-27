@@ -563,8 +563,9 @@ func scanRecords(rows *sql.Rows) []TelemetryRecord {
 	for rows.Next() {
 		var r TelemetryRecord
 		var coreCount, ctType, hasArm uint8
-		var diskSize, ramSize, installDur uint32
+		var diskSize, ramSize, installDur, failedLine uint32
 		var exitCode int16
+		var payloadVersion uint16
 		err := rows.Scan(
 			&r.NSAPP, &r.Type, &r.Status, &r.Method,
 			&coreCount, &ctType, &diskSize, &ramSize,
@@ -574,6 +575,8 @@ func scanRecords(rows *sql.Rows) []TelemetryRecord {
 			&r.CPUVendor, &r.CPUModel,
 			&r.GPUVendor, &r.GPUModel, &r.GPUPassthrough,
 			&r.RAMSpeed, &installDur, &hasArm,
+			&payloadVersion, &r.Arch, &r.FailedCommand, &failedLine,
+			&r.KernelVersion, &r.AppVersion,
 			&r.Platform,
 			&r.Created,
 		)
@@ -588,6 +591,8 @@ func scanRecords(rows *sql.Rows) []TelemetryRecord {
 		r.ExitCode = int(exitCode)
 		r.InstallDuration = int(installDur)
 		r.HasArm = hasArm != 0
+		r.PayloadVersion = int(payloadVersion)
+		r.FailedLine = int(failedLine)
 		out = append(out, r)
 	}
 	return out
@@ -602,6 +607,8 @@ const recordSelectCols = `nsapp, type, status, method,
 	cpu_vendor, cpu_model,
 	gpu_vendor, gpu_model, gpu_passthrough,
 	ram_speed, install_duration, has_arm,
+	payload_version, arch, failed_command, failed_line,
+	kernel_version, app_version,
 	` + platformExpr + ` AS platform_resolved,
 	toString(created)`
 
