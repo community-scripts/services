@@ -917,28 +917,26 @@ func containsAny(haystack string, needles ...string) bool {
 	return false
 }
 
-// errDiagnosticHeader matches the header the engine puts in front of the real
-// error text. It comes in two shapes, and both have to be handled:
-//
-//	exit_code=1 | General error / Operation not permitted | at line 23: npm …
-//	exit_code=1 | General error / Operation not permitted\n---\nCreating filesyst…
-//
-// The second occurs whenever the ERR trap had no command to record, and it is
-// common: five of eighteen exit-1 samples pulled from the live API. Requiring
-// the third field would have left those still matching on the description.
-var errDiagnosticHeader = regexp.MustCompile(`^exit_code=\d+\s*\|[^|\n]*(\|\s*)?`)
+var (
+	errHeaderStart   = regexp.MustCompile(`^exit_code=\d+`)
+	errHeaderCommand = regexp.MustCompile(`\| at line \d+: (.*)$`)
+)
 
-// stripDiagnosticHeader removes that header before any keyword matching below.
-//
-// The middle field is our own description of the exit code, not evidence about
-// what happened, and matching keywords against it was actively wrong. Exit 1 is
-// described as "General error / Operation not permitted", which contains
-// "operation not permitted" -- so every exit-1 failure was filed as a permission
-// problem. Over fourteen days that was 944 of 5165 errors, the largest single
-// category on the dashboard, and none of them had anything to do with
-// permissions; the record that surfaced it was a failing `npm install -g`.
+// stripDiagnosticHeader drops the engine's "exit_code=N | …" first line, which
+// is our own description and not evidence, keeping only the failing command and
+// the output below it. Legacy container traces put everything on one line after "|---|".
 func stripDiagnosticHeader(s string) string {
-	return errDiagnosticHeader.ReplaceAllString(s, "")
+	if !errHeaderStart.MatchString(s) {
+		return s
+	}
+	first, rest, _ := strings.Cut(s, "\n")
+	if head, legacy, ok := strings.Cut(first, "|---|"); ok {
+		first, rest = head, strings.ReplaceAll(legacy, "|", "\n")+"\n"+rest
+	}
+	if m := errHeaderCommand.FindStringSubmatch(first); m != nil {
+		rest = m[1] + "\n" + rest
+	}
+	return rest
 }
 
 // deriveErrorCategory is the authoritative server-side error categorization.

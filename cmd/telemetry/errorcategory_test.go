@@ -138,3 +138,45 @@ func TestExit101IsDecidedByEvidence(t *testing.T) {
 		t.Errorf("exit 100 = %q, want apt", got)
 	}
 }
+
+// The v3 header adds the step and function, which are labels too.
+func TestV3HeaderIsNotEvidence(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+		want string
+	}{
+		{
+			name: "step text is not evidence",
+			text: "exit_code=1 | General error | step: Waiting for network timeout | in setup_net | at line 9: foo\n---\nnothing useful",
+			want: "unknown",
+		},
+		{
+			name: "tool-aware explanation is not evidence",
+			text: "exit_code=1 | curl: exited with status 1 | step: Setting up Repository\n---\nsomething",
+			want: "unknown",
+		},
+		{
+			name: "the failing command still counts",
+			text: "exit_code=1 | General error | step: Building | in build_app | at line 32: cargo build --release",
+			want: "build",
+		},
+		{
+			name: "output below the header still counts",
+			text: "exit_code=1 | uv exited with status 1 | step: Setting up uv | in setup_uv\n---\nwrite /opt/x: no space left on device",
+			want: "storage",
+		},
+		{
+			name: "legacy one-line container trace keeps its evidence",
+			text: "exit_code=1 | General error / Operation not permitted|---|Reading package lists...|E: Unable to locate package foo",
+			want: "apt",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := deriveErrorCategory(1, c.text); got != c.want {
+				t.Errorf("deriveErrorCategory(1, …) = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
