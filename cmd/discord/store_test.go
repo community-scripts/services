@@ -1,19 +1,70 @@
 package main
 
 import (
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func testStore(t *testing.T, handler http.HandlerFunc) *store {
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	return &store{baseURL: srv.URL, client: srv.Client(), token: "t"}
+	return &store{baseURL: srv.URL, client: srv.Client(), token: "t", tokenTill: time.Now().Add(time.Hour)}
+}
+
+func testJWT(exp time.Time) string {
+	payload := base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"exp":%d}`, exp.Unix())))
+	return "h." + payload + ".s"
+}
+
+// PocketBase answers an expired token as a guest with an empty list, never 401,
+// so the store must log in again on its own before the token runs out.
+func TestStoreRenewsTokenBeforeExpiry(t *testing.T) {
+	logins := 0
+	s := testStore(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/auth-with-password") {
+			logins++
+			fmt.Fprintf(w, `{"token":%q}`, testJWT(time.Now().Add(time.Hour)))
+			return
+		}
+		if r.Header.Get("Authorization") == "stale" {
+			io.WriteString(w, `{"page":1,"totalPages":0,"items":[]}`)
+			return
+		}
+		io.WriteString(w, `{"page":1,"totalPages":1,"items":[{"id":"cfg"}]}`)
+	})
+	s.token, s.tokenTill = "stale", time.Now().Add(time.Minute)
+
+	raw, err := s.firstRecord("discord_config", "dev_repo='o/dev'")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw == nil || logins != 1 {
+		t.Fatalf("want a fresh login and the record, got %d login(s) and %s", logins, raw)
+	}
+
+	if _, err := s.firstRecord("discord_config", "dev_repo='o/dev'"); err != nil {
+		t.Fatal(err)
+	}
+	if logins != 1 {
+		t.Fatalf("a valid token was renewed again: %d logins", logins)
+	}
+}
+
+func TestTokenExpiry(t *testing.T) {
+	exp := time.Now().Add(72 * time.Hour).Truncate(time.Second)
+	if got := tokenExpiry(testJWT(exp)); !got.Equal(exp) {
+		t.Fatalf("want %v, got %v", exp, got)
+	}
+	if got := tokenExpiry("not-a-jwt"); got.After(time.Now().Add(time.Hour+time.Minute)) || got.Before(time.Now()) {
+		t.Fatalf("unreadable token should be kept for about an hour, got %v", got)
+	}
 }
 
 func TestListRecordsPaginates(t *testing.T) {
