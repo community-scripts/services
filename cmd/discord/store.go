@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,8 +20,9 @@ type store struct {
 	collection string
 	client     *http.Client
 
-	mu    sync.Mutex
-	token string
+	mu        sync.Mutex
+	token     string
+	tokenTill time.Time
 }
 
 type guildSettings struct {
@@ -105,17 +107,43 @@ func (s *store) authenticate() error {
 			continue
 		}
 		s.mu.Lock()
-		s.token = out.Token
+		s.token, s.tokenTill = out.Token, tokenExpiry(out.Token)
 		s.mu.Unlock()
 		return nil
 	}
 	return fmt.Errorf("pocketbase auth failed: %s", strings.Join(attempts, "; "))
 }
 
+// PocketBase serves a request with an expired token as a guest instead of
+// answering 401, and a guest lists every collection here as empty. So the token
+// is renewed before it lapses rather than when a request is refused.
 func (s *store) currentToken() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if time.Now().After(s.tokenTill.Add(-5 * time.Minute)) {
+		return ""
+	}
 	return s.token
+}
+
+// A token whose expiry cannot be read is kept for an hour.
+func tokenExpiry(token string) time.Time {
+	fallback := time.Now().Add(time.Hour)
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return fallback
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return fallback
+	}
+	var claims struct {
+		Exp int64 `json:"exp"`
+	}
+	if json.Unmarshal(payload, &claims) != nil || claims.Exp == 0 {
+		return fallback
+	}
+	return time.Unix(claims.Exp, 0)
 }
 
 func (s *store) do(method, path string, body []byte) ([]byte, error) {
