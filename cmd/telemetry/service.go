@@ -873,7 +873,8 @@ var (
 		253: {"App: Data migration required — update aborted", "config"},
 		254: {"App: User declined prompt or input timed out", "user_aborted"},
 		// --- DPKG ---
-		255: {"DPKG: Fatal internal error", "apt"},
+		// qm, pct, ssh and perl's die exit 255 on any error; the command decides.
+		255: {"Fatal error (exit 255 from qm, pct, ssh or dpkg)", "unknown"},
 		// --- Default ---
 	}
 )
@@ -923,6 +924,7 @@ func containsAny(haystack string, needles ...string) bool {
 var (
 	errHeaderStart   = regexp.MustCompile(`^exit_code=\d+`)
 	errHeaderCommand = regexp.MustCompile(`\| at line \d+: (.*)$`)
+	proxmoxCommand   = regexp.MustCompile(`^(?:\$\{?std(?::-)?\}?\s+)?(?:\S*/)?(?:qm|pct|pvesm|pvesh|pveam|pvenode)\s`)
 )
 
 // stripDiagnosticHeader drops the engine's "exit_code=N | …" first line, which
@@ -952,6 +954,9 @@ func deriveErrorCategory(code int, errText string) string {
 		return cat
 	}
 	e := strings.ToLower(stripDiagnosticHeader(errText))
+	if first, _, _ := strings.Cut(e, "\n"); code == 255 && proxmoxCommand.MatchString(first) {
+		return "proxmox"
+	}
 	switch {
 	case containsAny(e, "out of memory", "oom-kill", "cannot allocate memory", "killed process", "memory exhausted"):
 		return "resource"
