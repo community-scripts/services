@@ -6,7 +6,7 @@ COPY . .
 RUN go build -trimpath -ldflags "-s -w" -o /out/telemetry-service ./cmd/telemetry
 
 FROM alpine:3.23
-RUN apk add --no-cache ca-certificates tzdata
+RUN apk upgrade --no-cache && apk add --no-cache ca-certificates tzdata
 WORKDIR /app
 COPY --from=build /out/telemetry-service /app/telemetry-service
 COPY entrypoint.sh /app/entrypoint.sh
