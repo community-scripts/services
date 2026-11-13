@@ -384,6 +384,11 @@ func (b *bot) handleIssueComment(e issueCommentEvent) {
 	if app := e.Comment.PerformedViaGitHubApp; app != nil && strconv.FormatInt(app.ID, 10) == b.cfg.githubAppID {
 		return
 	}
+	// Bot comments (CI, label bots, other apps) are noise in the testing thread.
+	// Deletes still go through so anything mirrored before this filter is cleaned up.
+	if isBotComment(e.Comment) && e.Action != "deleted" {
+		return
+	}
 	rec, err := b.store.threadByIssue(e.Repository.FullName, e.Issue.Number)
 	if err != nil {
 		log.Printf("discord bot: thread for %s#%d: %v", e.Repository.FullName, e.Issue.Number, err)
@@ -424,6 +429,10 @@ func (b *bot) handleIssueComment(e issueCommentEvent) {
 	case "deleted":
 		b.removeMirrored(rec, rows)
 	}
+}
+
+func isBotComment(c ghComment) bool {
+	return c.User.Type == "Bot" || botLogin.MatchString(c.User.Login)
 }
 
 func (b *bot) mirrorComment(rec *threadRecord, c ghComment) {

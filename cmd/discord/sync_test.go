@@ -136,3 +136,21 @@ func TestGithubToDiscordStripsMarkers(t *testing.T) {
 		t.Fatalf("got %q", chunks[0])
 	}
 }
+
+func TestIsBotComment(t *testing.T) {
+	cases := []struct {
+		user ghUser
+		want bool
+	}{
+		{ghUser{Login: "dependabot[bot]", Type: "Bot"}, true},
+		{ghUser{Login: "some-app[bot]"}, true},
+		{ghUser{Login: "github-actions"}, true},
+		{ghUser{Login: "ci-runner", Type: "Bot"}, true},
+		{ghUser{Login: "octocat", Type: "User"}, false},
+	}
+	for _, c := range cases {
+		if got := isBotComment(ghComment{User: c.user}); got != c.want {
+			t.Errorf("isBotComment(%+v) = %v, want %v", c.user, got, c.want)
+		}
+	}
+}
