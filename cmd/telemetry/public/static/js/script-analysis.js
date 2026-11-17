@@ -453,6 +453,10 @@
     R.initChrome();
     readURL();
     bind();
+    R.onUnlock(function () {
+      load();
+      if (state.app) loadDetail();
+    });
     const app = state.app;
     await load();
     if (app) await openScript(app);

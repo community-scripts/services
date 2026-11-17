@@ -63,7 +63,7 @@ func TestWithoutTracesCausesAreExitCodes(t *testing.T) {
 
 func TestReadGuard(t *testing.T) {
 	ok := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
-	h := readGuard(ok, NewRateLimiter(3, 3), nil, "s3cret")
+	h := readGuard(ok, NewRateLimiter(3, 3), nil, "s3cret", "tr4ces")
 	get := func(h http.Handler, ip, path, auth string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		req.RemoteAddr = ip + ":40000"
@@ -94,8 +94,13 @@ func TestReadGuard(t *testing.T) {
 	if c := get(h, "198.51.100.2", "/api/records", "").Code; c != http.StatusOK {
 		t.Errorf("clients share a bucket: %d", c)
 	}
-	unset := readGuard(ok, NewRateLimiter(3, 3), nil, "")
+	for i, want := range []int{http.StatusOK, http.StatusOK, http.StatusOK, http.StatusTooManyRequests} {
+		if c := get(h, "192.0.2.9", "/api/records", "Bearer tr4ces").Code; c != want {
+			t.Errorf("read %d with the trace password: %d, want %d", i+1, c, want)
+		}
+	}
+	unset := readGuard(ok, NewRateLimiter(3, 3), nil, "", "")
 	if c := get(unset, "203.0.113.7", "/api/records", "Bearer "); c.Code != http.StatusForbidden {
-		t.Errorf("an empty token passes while TELEMETRY_ADMIN_TOKEN is unset: %d", c.Code)
+		t.Errorf("an empty token passes while TELEMETRY_ADMIN_TOKEN and TELEMETRY_TRACE_PASSWORD are unset: %d", c.Code)
 	}
 }

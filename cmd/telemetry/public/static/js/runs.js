@@ -210,11 +210,12 @@
       if (trace) {
         html += '<details class="trace" open><summary>Trace, ' + lines + (lines === 1 ? ' line' : ' lines') + '</summary><pre>' + esc(trace) + '</pre></details>';
       } else {
-        html += '<p class="muted">' + (rec.traces_withheld ? 'The trace is shown to maintainers only.' : 'No trace was sent with this run.') + '</p>';
+        html += rec.traces_withheld ? unlockForm() : '<p class="muted">No trace was sent with this run.</p>';
       }
       html += '<div class="rd-actions">' +
         (trace ? '<button type="button" class="btn" data-copy="trace">Copy trace</button>' : '') +
-        '<button type="button" class="btn" data-copy="markdown">Copy as Markdown</button></div>';
+        '<button type="button" class="btn" data-copy="markdown">Copy as Markdown</button>' +
+        (password && rec.status === 'failed' ? '<button type="button" class="btn" data-issue="run">Create issue</button>' : '') + '</div>';
       html += '</section>';
     }
 
@@ -365,13 +366,124 @@
     setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
   }
 
+  // The trace password is kept for this tab. With it the API also returns the text a run reported.
+  const PASSWORD_KEY = 'tracePassword';
+  const unlockListeners = [];
+  let password = '';
+  try { password = sessionStorage.getItem(PASSWORD_KEY) || ''; } catch (e) { /* storage unavailable */ }
+  function setPassword(p) {
+    password = p;
+    try {
+      if (p) sessionStorage.setItem(PASSWORD_KEY, p); else sessionStorage.removeItem(PASSWORD_KEY);
+    } catch (e) { /* storage unavailable */ }
+  }
+  function request(pw) {
+    return pw ? { cache: 'no-store', headers: { Authorization: 'Bearer ' + pw } } : { cache: 'no-store' };
+  }
+  function onUnlock(fn) { unlockListeners.push(fn); }
+  function unlocked() { return !!password; }
+
+  // Fills the issue form. A trace password in the tab is sent along; without one the form asks for the admin password.
+  function openIssue(title, body) {
+    const el = function (id) { return document.getElementById(id); };
+    el('issueAuth').hidden = !!password;
+    el('issuePassword').required = !password;
+    el('issueTitle').value = String(title).slice(0, 200);
+    el('issueBody').value = String(body).slice(0, 60000);
+    el('issueResult').textContent = '';
+    const dlg = el('issueDialog');
+    if (dlg.showModal && !dlg.open) dlg.showModal();
+    else dlg.setAttribute('open', '');
+  }
+
+  async function submitIssue() {
+    const el = function (id) { return document.getElementById(id); };
+    const result = el('issueResult');
+    el('issueSubmit').disabled = true;
+    try {
+      const payload = {
+        title: el('issueTitle').value, body: el('issueBody').value,
+        labels: el('issueLabels').value.split(',').map(function (l) { return l.trim(); }).filter(Boolean),
+      };
+      if (!password) payload.password = el('issuePassword').value;
+      const opts = request(password);
+      opts.method = 'POST';
+      opts.headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers);
+      opts.body = JSON.stringify(payload);
+      const r = await fetch('/api/github/create-issue', opts);
+      const text = await r.text();
+      let res = {};
+      try { res = JSON.parse(text) || {}; } catch (e) { /* plain text answer */ }
+      const link = res.issue_url ? '<a href="' + esc(res.issue_url) + '" target="_blank" rel="noopener">' + esc(res.issue_url) + '</a>' : '';
+      if (r.ok) {
+        result.innerHTML = 'Issue created: ' + link;
+      } else if (r.status === 409 && link) {
+        result.innerHTML = 'An open issue with this title already exists: ' + link;
+      } else if (r.status === 403 && password) {
+        setPassword('');
+        el('issueAuth').hidden = false;
+        el('issuePassword').required = true;
+        result.textContent = 'The trace password is no longer accepted. Enter the admin password to create the issue.';
+      } else {
+        result.textContent = 'The issue was not created: ' + (res.error || text.trim() || 'the server answered ' + r.status);
+      }
+    } catch (e) {
+      result.textContent = 'The issue was not created: ' + e.message;
+    } finally {
+      el('issueSubmit').disabled = false;
+    }
+  }
+
   async function getJSON(url) {
-    const r = await fetch(url, { cache: 'no-store' });
+    let r = await fetch(url, request(password));
+    // A password the server stopped accepting would otherwise fail every request of the page.
+    if (r.status === 403 && password) {
+      setPassword('');
+      r = await fetch(url, request(''));
+    }
     if (!r.ok) {
       const msg = (await r.text()).trim();
       throw new Error(msg || 'The server answered ' + r.status);
     }
     return r.json();
+  }
+
+  function unlockForm() {
+    return '<form class="unlock" data-unlock><span>The trace is shown to maintainers only.</span>' +
+      '<input type="password" class="search-input" name="password" placeholder="Password" aria-label="Trace password" autocomplete="current-password" required>' +
+      '<button type="submit" class="btn">Show trace</button><span class="form-result" role="status"></span></form>';
+  }
+
+  // Loads one run again; with the password set the answer carries its trace.
+  async function fetchRun(rec) {
+    const started = parseTime(rec.started_at);
+    const q = new URLSearchParams({
+      type: 'all', limit: '1', days: String(started ? Math.floor((Date.now() - started.getTime()) / 86400000) + 2 : 365),
+    });
+    if (rec.nsapp) q.set('app', rec.nsapp);
+    if (rec.execution_id) q.set('execution_id', rec.execution_id); else q.set('random_id', rec.random_id || '');
+    const res = await getJSON('/api/records?' + q.toString());
+    return (res.records || [])[0] || null;
+  }
+
+  async function unlock(form) {
+    const pw = form.elements.password.value;
+    const result = form.querySelector('.form-result');
+    const say = function (msg) { if (result) result.textContent = msg; };
+    if (!pw) return;
+    try {
+      const probe = await fetch('/api/exit-codes', request(pw));
+      if (probe.status === 403) { say('That password is not accepted.'); return; }
+      if (!probe.ok) throw new Error('the server answered ' + probe.status);
+      setPassword(pw);
+      if (current && form.closest('#recordDialog')) {
+        const fresh = await fetchRun(current);
+        if (fresh) openRecord(fresh); else say('The password is accepted, but this run could not be loaded again.');
+      }
+      unlockListeners.forEach(function (fn) { fn(); });
+    } catch (e) {
+      say('Could not check the password: ' + e.message);
+    }
   }
 
   let current = null;
@@ -397,12 +509,29 @@
       copyText(text, copy);
       return;
     }
+    if (current && t.closest('[data-issue="run"]')) {
+      openIssue('[Telemetry] ' + (current.nsapp || 'unknown') + ': ' + headline(current), runMarkdown(current, 3));
+      return;
+    }
     if (t.closest('[data-close-dialog]')) {
       const d = t.closest('dialog');
       if (d) d.close();
       return;
     }
     if (t.tagName === 'DIALOG') t.close();
+  });
+
+  document.addEventListener('submit', function (e) {
+    if (!e.target || !e.target.closest) return;
+    if (e.target.closest('#issueForm')) {
+      e.preventDefault();
+      submitIssue();
+      return;
+    }
+    const form = e.target.closest('[data-unlock]');
+    if (!form) return;
+    e.preventDefault();
+    unlock(form);
   });
 
   function applyTheme(t) {
@@ -433,6 +562,7 @@
     hostName: hostName, setupName: setupName, stageTimeline: stageTimeline, recordDialogHTML: recordDialogHTML,
     runMarkdown: runMarkdown, causeMarkdown: causeMarkdown, mdCell: mdCell, columnsSVG: columnsSVG, copyText: copyText,
     download: download, getJSON: getJSON, openRecord: openRecord, closeRecord: closeRecord, initChrome: initChrome,
+    unlockForm: unlockForm, onUnlock: onUnlock, unlocked: unlocked, openIssue: openIssue,
     current: function () { return current; },
   };
 })();

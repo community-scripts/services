@@ -13,30 +13,34 @@ if (!fixtures) {
   console.error('usage: node testdata/pages-smoke.js <fixtures dir> [<anonymous fixtures dir>]');
   process.exit(2);
 }
-const fixture = (n) => JSON.parse(fs.readFileSync(path.join(fixtures, n), 'utf8'));
-let allRecords = fixture('records.json').records;
+const fixture = (n, dir) => JSON.parse(fs.readFileSync(path.join(dir || fixtures, n), 'utf8'));
+// Requests carrying the trace password are answered from the fixtures with traces.
+const tracedFixtures = fixtures;
+const PASSWORD = 'tr4ces';
 
 let failures = 0;
 const fail = (msg) => { console.error('  ' + msg); failures++; };
 const expect = (cond, msg) => { if (!cond) fail(msg); };
 
 // Answers like the API: /api/records honours the run filters the pages send.
-function api(url) {
+function api(url, dir) {
   const u = new URL(url, 'http://localhost');
   const q = u.searchParams;
   switch (u.pathname) {
-    case '/api/dashboard': return fixture('dashboard.json');
-    case '/api/errors': return fixture('errors.json');
-    case '/api/causes': return fixture('causes.json');
-    case '/api/app-errors': return fixture('app-errors.json');
-    case '/api/repo-slugs': return fixture('repo-slugs.json');
-    case '/api/scripts': return fixture('scripts.json');
-    case '/api/script-detail': return q.get('app') === 'immich' ? fixture('script-detail.json') : null;
+    case '/api/dashboard': return fixture('dashboard.json', dir);
+    case '/api/errors': return fixture('errors.json', dir);
+    case '/api/causes': return fixture('causes.json', dir);
+    case '/api/app-errors': return fixture('app-errors.json', dir);
+    case '/api/repo-slugs': return fixture('repo-slugs.json', dir);
+    case '/api/scripts': return fixture('scripts.json', dir);
+    case '/api/script-detail': return q.get('app') === 'immich' ? fixture('script-detail.json', dir) : null;
+    case '/api/exit-codes': return {};
     case '/api/records': {
-      let recs = allRecords.filter((r) =>
+      let recs = fixture('records.json', dir).records.filter((r) =>
         (!q.get('status') || r.status === q.get('status')) &&
         (!q.get('cause') || r.cause === q.get('cause')) &&
         (!q.get('app') || r.nsapp === q.get('app')) &&
+        (!q.get('execution_id') || r.execution_id === q.get('execution_id')) &&
         (!q.get('exit_code') || String(r.exit_code || 0) === q.get('exit_code')) &&
         (!q.get('search') || r.nsapp.includes(q.get('search'))));
       const limit = Number(q.get('limit') || 50), page = Number(q.get('page') || 1);
@@ -48,7 +52,7 @@ function api(url) {
   return null;
 }
 
-function page(template, scripts, search) {
+function page(template, scripts, search, session) {
   const html = fs.readFileSync(path.join(pub, 'templates', template), 'utf8');
   const ids = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]));
   const elements = {};
@@ -71,6 +75,7 @@ function page(template, scripts, search) {
   };
   const downloads = [];
   const clipboard = [];
+  const posts = [];
   const document = {
     documentElement: element('html'),
     body: { appendChild() {} },
@@ -97,11 +102,23 @@ function page(template, scripts, search) {
     location: { pathname: template === 'dashboard.html' ? '/' : '/' + template.replace('.html', ''), search: search || '', origin: 'http://localhost', href: 'http://localhost/' },
     history: { replaceState(_s, _t, url) { ctx.location.search = url.includes('?') ? url.slice(url.indexOf('?')) : ''; } },
     localStorage: { getItem: () => null, setItem() {} },
+    sessionStorage: {
+      getItem: (k) => (session && session[k]) || null,
+      setItem(k, v) { if (session) session[k] = v; },
+      removeItem(k) { if (session) delete session[k]; },
+    },
     navigator: { clipboard: { writeText(t) { clipboard.push(t); return Promise.resolve(); } } },
     isSecureContext: true,
     __NO_AUTOSTART__: true,
-    fetch: async (url) => {
-      const body = api(url);
+    fetch: async (url, opts) => {
+      const auth = opts && opts.headers && opts.headers.Authorization;
+      if (auth && auth !== 'Bearer ' + PASSWORD) return { ok: false, status: 403, text: async () => 'forbidden', json: async () => ({}) };
+      if (opts && opts.method === 'POST') {
+        posts.push({ url, auth, body: JSON.parse(opts.body) });
+        const res = { success: true, issue_url: 'https://github.com/o/r/issues/9' };
+        return { ok: true, status: 200, text: async () => JSON.stringify(res), json: async () => res };
+      }
+      const body = api(url, auth ? tracedFixtures : fixtures);
       if (!body) return { ok: false, status: 404, text: async () => 'no fixture for ' + url, json: async () => ({}) };
       return { ok: true, status: 200, text: async () => JSON.stringify(body), json: async () => JSON.parse(JSON.stringify(body)) };
     },
@@ -112,6 +129,7 @@ function page(template, scripts, search) {
     vm.runInContext(fs.readFileSync(path.join(pub, 'static', 'js', s), 'utf8'), ctx, { filename: s });
   }
   const click = (target) => listeners.click.forEach((fn) => fn({ target, preventDefault() {} }));
+  const submit = (target) => listeners.submit.forEach((fn) => fn({ target, preventDefault() {} }));
   // A fake event target whose closest() answers for one selector.
   const target = (selector, attrs) => ({
     tagName: 'BUTTON',
@@ -119,7 +137,7 @@ function page(template, scripts, search) {
   });
   // Ids the scripts render themselves are fine once some markup carries them.
   const unknown = () => [...missing].filter((id) => !Object.values(elements).some((e) => String(e.innerHTML).includes('id="' + id + '"')));
-  return { ctx, el: (id) => document.getElementById(id), missing: unknown, click, target, downloads, blobs, clipboard };
+  return { ctx, el: (id) => document.getElementById(id), missing: unknown, click, submit, target, downloads, blobs, clipboard, posts };
 }
 
 const tick = () => new Promise((r) => setTimeout(r, 20));
@@ -267,6 +285,17 @@ async function errorPage() {
   p.click(p.target('[data-drun]', { 'data-drun': '0' }));
   expect(p.el('recordDialog').open && p.el('recordBody').innerHTML.includes('What went wrong'), 'a drill-down run does not open the record dialog');
 
+  // Without a trace password in the tab the issue form asks for the admin password and sends it.
+  p.click(p.target('[data-drill]', { 'data-drill': 'issue' }));
+  expect(p.el('issueDialog').open && p.el('issueAuth').hidden === false && p.el('issuePassword').required === true,
+    'the issue form does not ask for the admin password');
+  expect(p.el('issueTitle').value === '[Telemetry] immich: npm ERR! code ENOSPC' && p.el('issueBody').value.includes('## npm ERR! code ENOSPC'),
+    'the issue form is not filled from the open cause: ' + p.el('issueTitle').value);
+  p.el('issuePassword').value = 'adm1n';
+  p.submit(p.target('#issueForm', {}));
+  await tick();
+  expect(p.posts.length === 1 && p.posts[0].body.password === 'adm1n' && !p.posts[0].auth, 'the admin password is not sent with the issue');
+
   const out = await p.ctx.ErrorPage.exportView();
   expect(out && out.causes.length && out.causes[0].example_runs && out.causes[0].example_runs[0].error, 'the export lacks example runs with traces');
   expect(p.downloads.length === 1 && /^telemetry-errors-\d+d-/.test(p.downloads[0].name), 'the export did not download');
@@ -326,7 +355,6 @@ async function scriptsPage() {
 
 async function anonymous() {
   fixtures = anonymousFixtures;
-  allRecords = fixture('records.json').records;
   const leaked = (html) => ['npm ERR!', '$STD', 'Building Immich', 'Unable to locate package'].filter((s) => html.includes(s));
 
   const d = page('dashboard.html', ['runs.js', 'dashboard.js']);
@@ -362,7 +390,56 @@ async function anonymous() {
     const l = leaked(html);
     expect(!l.length, 'the anonymous ' + name + ' shows ' + l.join(', '));
   }
-  return new Set([...d.missing(), ...e.missing(), ...s.missing()]);
+
+  // The password, entered in the open run dialog, shows that run's trace and reloads the page with traces.
+  const result = { textContent: '' };
+  const form = (pw) => ({
+    elements: { password: { value: pw } }, querySelector: () => result,
+    closest(sel) { return sel === '[data-unlock]' || sel === '#recordDialog' ? this : null; },
+  });
+  expect(dlg.includes('data-unlock') && dlg.includes('type="password"'), 'the anonymous record dialog has no password field');
+  expect(!dlg.includes('data-issue') && !anonPane.includes('data-issue'), 'an issue can be created without the password');
+  d.submit(form('wrong'));
+  await tick();
+  expect(result.textContent.includes('not accepted') && !d.el('recordBody').innerHTML.includes('npm ERR!'), 'a wrong password is not refused');
+  d.submit(form(PASSWORD));
+  await tick();
+  expect(d.el('recordBody').innerHTML.includes('npm ERR! syscall write') && !d.el('recordBody').innerHTML.includes('data-unlock'),
+    'the password does not show the trace in the open run dialog');
+  expect(d.el('triageList').innerHTML.includes('npm ERR! code ENOSPC'), 'the page does not reload with messages after the password');
+
+  // With the password the run and the open app offer an issue, sent with the password instead of a second prompt.
+  expect(d.el('recordBody').innerHTML.includes('data-issue="run"') && d.el('triagePane').innerHTML.includes('data-issue="pane"'),
+    'the password does not offer to create an issue');
+  d.click(d.target('[data-issue="run"]', {}));
+  expect(d.el('issueDialog').open && d.el('issueAuth').hidden === true && d.el('issuePassword').required === false,
+    'the issue form asks for a second password');
+  expect(d.el('issueTitle').value === '[Telemetry] immich: npm ERR! code ENOSPC' && d.el('issueBody').value.includes('npm ERR! errno -28'),
+    'the issue form is not filled from the run: ' + d.el('issueTitle').value);
+  d.el('issueLabels').value = 'bug, telemetry';
+  d.submit(d.target('#issueForm', {}));
+  await tick();
+  const sent = d.posts[0] || { body: {} };
+  expect(sent.url === '/api/github/create-issue' && sent.auth === 'Bearer ' + PASSWORD && !('password' in sent.body) &&
+    sent.body.labels.join() === 'bug,telemetry' && sent.body.title === '[Telemetry] immich: npm ERR! code ENOSPC',
+  'the issue is not sent with the trace password: ' + JSON.stringify(sent).slice(0, 200));
+  expect(d.el('issueResult').innerHTML.includes('https://github.com/o/r/issues/9'), 'the created issue is not linked');
+  d.click(d.target('[data-issue="pane"]', {}));
+  expect(d.el('issueTitle').value === '[Telemetry] npm ERR! code ENOSPC' && d.el('issueBody').value.includes('Distinct setups: 3'),
+    'the issue form is not filled from the open cause: ' + d.el('issueTitle').value);
+  d.click(d.target('[data-pick]', { 'data-pick': 'app', 'data-id': 'immich' }));
+  await tick();
+  d.click(d.target('[data-issue="pane"]', {}));
+  expect(d.el('issueTitle').value === '[Telemetry] immich: npm ERR! code ENOSPC' && d.el('issueBody').value.includes('### Causes') &&
+    d.el('issueBody').value.includes('Failing now: yes') && d.el('issueBody').value.includes('| npm ERR! code ENOSPC | 3 |'),
+  'the issue form is not filled from the open app: ' + d.el('issueTitle').value);
+
+  // A stored password the server no longer accepts is dropped instead of failing every request.
+  const session = { tracePassword: 'rotated' };
+  const stale = page('dashboard.html', ['runs.js', 'dashboard.js'], '', session);
+  await stale.ctx.Dashboard.init();
+  expect(stale.el('triageList').innerHTML.includes('immich') && !session.tracePassword, 'a rejected stored password breaks the page');
+  return new Set([...d.missing(), ...e.missing(), ...s.missing(), ...stale.missing()]);
 }
 
 (async () => {
