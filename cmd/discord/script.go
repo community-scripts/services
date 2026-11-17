@@ -212,6 +212,7 @@ func testingMessage(title string, info scriptInfo, rawBase string, jsonBody []by
 			} `json:"default_credentials"`
 			Notes []struct {
 				Text string `json:"text"`
+				Type string `json:"type"`
 			} `json:"notes"`
 		}
 		if json.Unmarshal(jsonBody, &meta) == nil {
@@ -227,9 +228,14 @@ func testingMessage(title string, info scriptInfo, rawBase string, jsonBody []by
 			}
 			var notes []string
 			for _, n := range meta.Notes {
-				if n.Text != "" {
-					notes = append(notes, n.Text)
+				if n.Text == "" {
+					continue
 				}
+				kind := strings.ToUpper(strings.TrimSpace(n.Type))
+				if kind == "" {
+					kind = "INFO"
+				}
+				notes = append(notes, fmt.Sprintf("%d. [%s] - %s", len(notes)+1, kind, n.Text))
 			}
 			if len(notes) > 0 {
 				fmt.Fprintf(&b, "\n%s\n", strings.Join(notes, "\n"))

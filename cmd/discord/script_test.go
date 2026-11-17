@@ -96,13 +96,13 @@ func TestRunsOn(t *testing.T) {
 
 func TestTestingMessageCredentialsAndNotes(t *testing.T) {
 	info := scriptInfo{Slug: "app", Type: "ct", Path: "ct/app.sh", RunsOn: "pve"}
-	js := []byte(`{"default_credentials":{"username":"admin","password":null},"notes":[{"text":"Note one","type":"info"},{"text":"Note two","type":"warning"}]}`)
+	js := []byte(`{"default_credentials":{"username":"admin","password":null},"notes":[{"text":"Note one","type":"info"},{"text":"","type":"info"},{"text":"Note two","type":"warning"},{"text":"Note three"}]}`)
 	msg := testingMessage("App", info, "https://raw/main", js)
 	for _, want := range []string{
 		"The App script is ready for testing. Run it in the Proxmox VE shell (or on an Incus host) to create a container:",
 		"bash -c \"$(curl -fsSL https://raw/main/ct/app.sh)\"",
 		"Default credentials:\nUsername: admin\n",
-		"Note one\nNote two\n",
+		"1. [INFO] - Note one\n2. [WARNING] - Note two\n3. [INFO] - Note three\n",
 		"it will need to be recreated",
 	} {
 		if !strings.Contains(msg, want) {
