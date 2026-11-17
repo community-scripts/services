@@ -24,7 +24,7 @@
 |---------|----------------|--------|
 | SSH Access | SSH keys only, password login disabled | ✅ |
 | API Authentication | PocketBase admin token required | ✅ |
-| Dashboard Access | Read-only without authentication (aggregated data only) | ✅ |
+| Dashboard Access | Read-only without authentication; error text and failing commands only with the admin token | ✅ |
 | Admin Access | Via Coolify with 2FA | ✅ |
 
 ### 1.3 Data Access Control

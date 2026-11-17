@@ -67,7 +67,7 @@ func fullFilter() RunFilter {
 	return RunFilter{
 		Days: 7, RepoSource: "external", RepoSlug: "me/fork", Platform: "incus", Type: "lxc",
 		App: "docker", Search: "dock", OS: "debian", Status: "installing", ExitCode: &code,
-		Category: "apt", Message: "E: boom", Cause: "E: boom", ExecutionID: "e1", RandomID: "r1",
+		Category: "apt", Message: "E: boom", Cause: "E: boom", ExecutionID: "e1", RandomID: "r1", Traces: true,
 	}
 }
 
@@ -77,19 +77,21 @@ func TestRunAliasesNeverShadowAColumn(t *testing.T) {
 		cols[c] = true
 	}
 	alias := regexp.MustCompile(` AS ([a-z_0-9]+)$`)
-	seen := map[string]bool{}
-	for _, c := range runColumns(true) {
-		m := alias.FindStringSubmatch(c)
-		if m == nil {
-			t.Fatalf("column without alias: %s", c)
+	for _, traces := range []bool{true, false} {
+		seen := map[string]bool{}
+		for _, c := range runColumns(true, traces) {
+			m := alias.FindStringSubmatch(c)
+			if m == nil {
+				t.Fatalf("column without alias: %s", c)
+			}
+			if cols[m[1]] {
+				t.Errorf("alias %s is also a table column", m[1])
+			}
+			if seen[m[1]] {
+				t.Errorf("alias %s defined twice", m[1])
+			}
+			seen[m[1]] = true
 		}
-		if cols[m[1]] {
-			t.Errorf("alias %s is also a table column", m[1])
-		}
-		if seen[m[1]] {
-			t.Errorf("alias %s defined twice", m[1])
-		}
-		seen[m[1]] = true
 	}
 }
 
@@ -117,31 +119,34 @@ func TestOuterQueriesUseOnlyRunAliases(t *testing.T) {
 
 func TestEveryQueryBindsEachPlaceholder(t *testing.T) {
 	now := time.Now()
-	f := fullFilter()
-	list, la := f.sql(runQuery{sel: "run_id", tail: "\nORDER BY r_started"})
-	b, ba := breakdownSQL(f, []breakdownDim{dimAll, dimApp, dimExit, dimType})
-	c, ca := causesSQL(f, 10)
-	tr, ta := trendSQL(f, now)
-	ap, aa := appStatsSQL(f, true, 5)
-	st, sa := stuckSQL(f, 4, now)
-	for name, q := range map[string]struct {
-		q string
-		n int
-	}{
-		"list": {list, len(la)}, "breakdown": {b, len(ba)}, "causes": {c, len(ca)},
-		"trend": {tr, len(ta)}, "apps": {ap, len(aa)}, "stuck": {st, len(sa)},
-	} {
-		if got := placeholderCount(q.q); got != q.n {
-			t.Errorf("%s: %d placeholders, %d args\n%s", name, got, q.n, q.q)
-		}
-		if strings.Contains(q.q, "%!") {
-			t.Errorf("%s: unconsumed format verb", name)
-		}
-		if regexp.MustCompile(`\$[0-9]`).MatchString(q.q) {
-			t.Errorf("%s: $N would switch the driver to numeric binding", name)
-		}
-		if strings.Count(stripLiterals(q.q), "?") != strings.Count(q.q, "?") {
-			t.Errorf("%s: a ? inside a string literal would be bound", name)
+	public := fullFilter()
+	public.Traces = false
+	for _, f := range []RunFilter{fullFilter(), public} {
+		list, la := f.sql(runQuery{sel: "run_id", tail: "\nORDER BY r_started"})
+		b, ba := breakdownSQL(f, []breakdownDim{dimAll, dimApp, dimExit, dimType})
+		c, ca := causesSQL(f, 10)
+		tr, ta := trendSQL(f, now)
+		ap, aa := appStatsSQL(f, true, 5)
+		st, sa := stuckSQL(f, 4, now)
+		for name, q := range map[string]struct {
+			q string
+			n int
+		}{
+			"list": {list, len(la)}, "breakdown": {b, len(ba)}, "causes": {c, len(ca)},
+			"trend": {tr, len(ta)}, "apps": {ap, len(aa)}, "stuck": {st, len(sa)},
+		} {
+			if got := placeholderCount(q.q); got != q.n {
+				t.Errorf("%s: %d placeholders, %d args\n%s", name, got, q.n, q.q)
+			}
+			if strings.Contains(q.q, "%!") {
+				t.Errorf("%s: unconsumed format verb", name)
+			}
+			if regexp.MustCompile(`\$[0-9]`).MatchString(q.q) {
+				t.Errorf("%s: $N would switch the driver to numeric binding", name)
+			}
+			if strings.Count(stripLiterals(q.q), "?") != strings.Count(q.q, "?") {
+				t.Errorf("%s: a ? inside a string literal would be bound", name)
+			}
 		}
 	}
 }
@@ -200,6 +205,9 @@ func TestRunFilterPredicates(t *testing.T) {
 	if w, _ := (RunFilter{Type: "all"}).runWhere(); w != "1=1" {
 		t.Errorf("all types, no filters: %s", w)
 	}
+	if w, a := (RunFilter{Type: "all", Message: "E: boom"}).runWhere(); w != "1=1" || len(a) != 0 {
+		t.Errorf("a message filter without traces probes withheld text: %s %v", w, a)
+	}
 }
 
 // Tools and addons are counted under their own dims even when rates exclude them.
@@ -251,6 +259,7 @@ func TestCacheKeysSeparateFiltersAndMatchWarmup(t *testing.T) {
 		{Days: 1}, {Days: 7}, {Days: 1, RepoSource: "ProxmoxVE"}, {Days: 1, RepoSlug: "a/b"},
 		{Days: 1, Platform: "pve"}, {Days: 1, Type: "all"}, {Days: 1, App: "x"}, {Days: 1, Search: "x"},
 		{Days: 1, Status: "failed"}, {Days: 1, ExitCode: &code}, {Days: 1, Cause: "x"}, {Days: 1, Message: "x"},
+		{Days: 1, Traces: true},
 	} {
 		k := v.cacheKey("errors")
 		if keys[k] {

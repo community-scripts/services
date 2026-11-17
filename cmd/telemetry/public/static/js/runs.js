@@ -210,7 +210,7 @@
       if (trace) {
         html += '<details class="trace" open><summary>Trace, ' + lines + (lines === 1 ? ' line' : ' lines') + '</summary><pre>' + esc(trace) + '</pre></details>';
       } else {
-        html += '<p class="muted">No trace was sent with this run.</p>';
+        html += '<p class="muted">' + (rec.traces_withheld ? 'The trace is shown to maintainers only.' : 'No trace was sent with this run.') + '</p>';
       }
       html += '<div class="rd-actions">' +
         (trace ? '<button type="button" class="btn" data-copy="trace">Copy trace</button>' : '') +

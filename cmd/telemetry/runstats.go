@@ -327,7 +327,7 @@ func (ch *CHClient) FetchCauses(ctx context.Context, f RunFilter, limit int, ful
 	if len(ids) == 0 {
 		return causes, nil
 	}
-	recs, err := ch.fetchRunDetails(ctx, ids, f.rowFloor(), full)
+	recs, err := ch.fetchRunDetails(ctx, ids, f.rowFloor(), full, f.Traces)
 	if err != nil {
 		return nil, err
 	}

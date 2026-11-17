@@ -65,8 +65,11 @@ func (r fakeRun) lastStage(now time.Time) (string, time.Time) {
 	return "", time.Time{}
 }
 
-func (r fakeRun) cause() (kind, key string) {
+func withheldQuery(q string) bool { return strings.Contains(q, "'exit_code' AS r_cause_kind") }
+
+func (r fakeRun) cause(q string) (kind, key string) {
 	switch {
+	case withheldQuery(q):
 	case r.msg != "":
 		return "message", r.msg
 	case r.cmd != "":
@@ -299,7 +302,7 @@ func (f *fakeCH) matching(q string, args []driver.NamedValue) []fakeRun {
 	}
 	var out []fakeRun
 	for _, r := range f.runs {
-		_, key := r.cause()
+		_, key := r.cause(q)
 		switch {
 		case strings.Contains(outer, "r_outcome = ?") && !has(r.outcome):
 			continue
@@ -348,7 +351,7 @@ func (f *fakeCH) route(q string, args []driver.NamedValue) [][]driver.Value {
 		var out [][]driver.Value
 		for _, r := range f.runs {
 			if ids[r.id] {
-				out = append(out, f.detailRow(r))
+				out = append(out, f.detailRow(r, q))
 			}
 		}
 		return out
@@ -373,7 +376,7 @@ func (f *fakeCH) route(q string, args []driver.NamedValue) [][]driver.Value {
 	case strings.Contains(q, "AS t_key"):
 		groups := map[string][2]int64{}
 		for _, r := range f.matching(q, args) {
-			_, key := r.cause()
+			_, key := r.cause(q)
 			g := groups[key]
 			if now.Sub(r.endAt(now)) < 24*time.Hour {
 				g[0]++
@@ -423,10 +426,10 @@ func (f *fakeCH) route(q string, args []driver.NamedValue) [][]driver.Value {
 var lastAliasRe = regexp.MustCompile(`\b(r_[a-z_]+|run_id)\b`)
 
 // detailRow follows runDetailCols, so a scan in another order fails the tests.
-func (f *fakeCH) detailRow(r fakeRun) []driver.Value {
+func (f *fakeCH) detailRow(r fakeRun, q string) []driver.Value {
 	now := f.now
 	stage, stageAt := r.lastStage(now)
-	kind, key := r.cause()
+	kind, key := r.cause(q)
 	term := int64(0)
 	if r.outcome != outcomeInProgress && r.outcome != outcomeUnknown {
 		term = ms(r.endAt(now))
@@ -553,7 +556,7 @@ func (f *fakeCH) causeRows(q string, args []driver.NamedValue) [][]driver.Value 
 	groups := map[string]*acc{}
 	var order []string
 	for _, r := range f.matching(q, args) {
-		kind, key := r.cause()
+		kind, key := r.cause(q)
 		if groups[key] == nil {
 			groups[key] = &acc{kind: kind, cat: r.cat, exit: r.exit}
 			order = append(order, key)
@@ -618,7 +621,7 @@ func (f *fakeCH) appRows(q string, args []driver.NamedValue) [][]driver.Value {
 			}
 		case outcomeFailed:
 			a.bad++
-			kind, key := r.cause()
+			kind, key := r.cause(q)
 			a.setups[r.setup()] = true
 			a.causes[kind+":"+key]++
 			a.exit, a.cat = r.exit, r.cat
@@ -653,7 +656,7 @@ func (f *fakeCH) appRows(q string, args []driver.NamedValue) [][]driver.Value {
 
 func TestFetchRunsKeepsListOrderAndBuildsStages(t *testing.T) {
 	ch, fake := newFakeCH(t)
-	recs, total, err := ch.FetchRuns(context.Background(), RunFilter{Days: 1, Type: "all"}, 1, 50, "-created")
+	recs, total, err := ch.FetchRuns(context.Background(), RunFilter{Days: 1, Type: "all", Traces: true}, 1, 50, "-created")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -697,7 +700,7 @@ func TestFetchRunsPastTheLastPageCountsSeparately(t *testing.T) {
 
 func TestFetchCausesTrendAndExamples(t *testing.T) {
 	ch, _ := newFakeCH(t)
-	causes, err := ch.FetchCauses(context.Background(), RunFilter{Days: 7}, 20, false)
+	causes, err := ch.FetchCauses(context.Background(), RunFilter{Days: 7, Traces: true}, 20, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -713,7 +716,7 @@ func TestFetchCausesTrendAndExamples(t *testing.T) {
 	if cmd == nil || cmd.ExampleMessage != "E: Unable to locate package libvips-dev" || cmd.Trend == "" {
 		t.Errorf("command cause %+v", cmd)
 	}
-	full, err := ch.FetchCauses(context.Background(), RunFilter{Days: 7}, 20, true)
+	full, err := ch.FetchCauses(context.Background(), RunFilter{Days: 7, Traces: true}, 20, true)
 	if err != nil || len(full[0].ExampleRuns) != 3 || full[0].ExampleRuns[0].Error == "" {
 		t.Errorf("full export: %v %+v", err, full[0].ExampleRuns)
 	}
@@ -721,7 +724,7 @@ func TestFetchCausesTrendAndExamples(t *testing.T) {
 
 func TestErrorPageCountsRunsNotRows(t *testing.T) {
 	ch, _ := newFakeCH(t)
-	data, err := ch.FetchErrorAnalysisData(context.Background(), RunFilter{Days: 1})
+	data, err := ch.FetchErrorAnalysisData(context.Background(), RunFilter{Days: 1, Traces: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -776,7 +779,7 @@ func TestDashboardFiguresArePerRun(t *testing.T) {
 
 func TestScriptStatsCarryTheLastFailure(t *testing.T) {
 	ch, _ := newFakeCH(t)
-	data, err := ch.FetchScriptStats(context.Background(), RunFilter{Days: 7}, nil)
+	data, err := ch.FetchScriptStats(context.Background(), RunFilter{Days: 7, Traces: true}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -796,7 +799,7 @@ func TestScriptStatsCarryTheLastFailure(t *testing.T) {
 
 func TestScriptDetailCountsTheRunsOfOneApp(t *testing.T) {
 	ch, _ := newFakeCH(t)
-	d, err := ch.FetchScriptDetail(context.Background(), RunFilter{Days: 7, App: "immich"})
+	d, err := ch.FetchScriptDetail(context.Background(), RunFilter{Days: 7, App: "immich", Traces: true})
 	if err != nil {
 		t.Fatal(err)
 	}

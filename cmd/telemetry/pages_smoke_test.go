@@ -12,7 +12,7 @@ import (
 )
 
 // writeFixtures builds the API answers with the fetchers the handlers call.
-func writeFixtures(t *testing.T, dir string) {
+func writeFixtures(t *testing.T, dir string, traces bool) {
 	t.Helper()
 	ch, _ := newFakeCH(t)
 	ctx := context.Background()
@@ -25,37 +25,37 @@ func writeFixtures(t *testing.T, dir string) {
 			t.Fatal(err)
 		}
 	}
-	dash, err := ch.FetchDashboardPage(ctx, RunFilter{Days: 1})
+	dash, err := ch.FetchDashboardPage(ctx, RunFilter{Days: 1, Traces: traces})
 	if err != nil {
 		t.Fatal(err)
 	}
 	write("dashboard.json", dash)
-	recs, total, err := ch.FetchRuns(ctx, RunFilter{Days: 1, Type: "all"}, 1, 100, "-created")
+	recs, total, err := ch.FetchRuns(ctx, RunFilter{Days: 1, Type: "all", Traces: traces}, 1, 100, "-created")
 	if err != nil {
 		t.Fatal(err)
 	}
 	write("records.json", map[string]interface{}{"records": recs, "page": 1, "limit": 100, "total": total, "total_pages": 1})
-	errs, err := ch.FetchErrorAnalysisData(ctx, RunFilter{Days: 1})
+	errs, err := ch.FetchErrorAnalysisData(ctx, RunFilter{Days: 1, Traces: traces})
 	if err != nil {
 		t.Fatal(err)
 	}
 	write("errors.json", errs)
-	causes, err := ch.FetchCauses(ctx, RunFilter{Days: 1}, 50, true)
+	causes, err := ch.FetchCauses(ctx, RunFilter{Days: 1, Traces: traces}, 50, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	write("causes.json", CausesResponse{Days: 1, Causes: causes, Updated: time.Now().UTC().Format(time.RFC3339)})
-	apps, err := ch.FetchAppStats(ctx, RunFilter{Days: 1}, true, 100)
+	apps, err := ch.FetchAppStats(ctx, RunFilter{Days: 1, Traces: traces}, true, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
 	write("app-errors.json", AppErrorsResponse{Days: 1, MinRuns: minRunsForRate(1), Apps: apps})
-	scripts, err := ch.FetchScriptStats(ctx, RunFilter{Days: 1}, nil)
+	scripts, err := ch.FetchScriptStats(ctx, RunFilter{Days: 1, Traces: traces}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	write("scripts.json", scripts)
-	detail, err := ch.FetchScriptDetail(ctx, RunFilter{Days: 1, App: "immich"})
+	detail, err := ch.FetchScriptDetail(ctx, RunFilter{Days: 1, App: "immich", Traces: traces})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,11 +72,16 @@ func TestPagesRenderAgainstAPIOutput(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	writeFixtures(t, dir)
+	anon := filepath.Join(dir, "anonymous")
+	if err := os.MkdirAll(anon, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFixtures(t, dir, true)
+	writeFixtures(t, anon, false)
 	if _, err := exec.LookPath("node"); err != nil {
 		t.Skip("node not available; the fixtures were built but the pages were not rendered")
 	}
-	out, err := exec.Command("node", "testdata/pages-smoke.js", dir).CombinedOutput()
+	out, err := exec.Command("node", "testdata/pages-smoke.js", dir, anon).CombinedOutput()
 	if err != nil {
 		t.Fatalf("the pages failed to render:\n%s", out)
 	}
