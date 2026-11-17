@@ -488,6 +488,149 @@ func rankFailureRates(apps []AppErrorStat, minRuns, n int) []AppErrorStat {
 	return out
 }
 
+// MatrixCell counts the failed runs of one app that share a cause.
+type MatrixCell struct {
+	App      string `json:"app"`
+	Cause    string `json:"cause"`
+	Failures int    `json:"failures"`
+}
+
+// MatrixApp is a row of the failure matrix; Other counts its failures outside the columns.
+type MatrixApp struct {
+	App      string `json:"app"`
+	Type     string `json:"type"`
+	Failures int    `json:"failures"`
+	Other    int    `json:"other"`
+}
+
+// MatrixCause is a column of the failure matrix.
+type MatrixCause struct {
+	Key      string `json:"key"`
+	Kind     string `json:"kind"`
+	Message  string `json:"message"`
+	ExitCode int    `json:"exit_code"`
+	Failures int    `json:"failures"`
+}
+
+// FailureMatrix sets the apps that fail most against what fails them.
+type FailureMatrix struct {
+	Apps     []MatrixApp   `json:"apps"`
+	Causes   []MatrixCause `json:"causes"`
+	Cells    []MatrixCell  `json:"cells"`
+	Failures int           `json:"failures"`
+}
+
+type matrixPair struct {
+	app, cause, kind, typ string
+	exit, n               int
+}
+
+const matrixSelect = `r_app AS m_app, r_cause AS m_cause, any(r_cause_kind), arrayElement(topK(1)(r_type), 1),
+	toInt64(arrayElement(topK(1)(r_exit), 1)), toInt64(count()) AS m_failures`
+
+func matrixSQL(f RunFilter, limit int) (string, []interface{}) {
+	return f.sql(runQuery{sel: matrixSelect, where: "r_outcome = 'failed' AND r_app != ''",
+		tail: fmt.Sprintf("\nGROUP BY m_app, m_cause\nORDER BY m_failures DESC, m_app, m_cause\nLIMIT %d", limit)})
+}
+
+// buildFailureMatrix keeps the apps and causes with the most failures. The overall
+// ranking can leave out the cause that fails a listed app most, which would show
+// that app as an empty row, so up to extra such causes join the columns.
+func buildFailureMatrix(pairs []matrixPair, maxApps, maxCauses, extra int) *FailureMatrix {
+	m := &FailureMatrix{Apps: []MatrixApp{}, Causes: []MatrixCause{}, Cells: []MatrixCell{}}
+	apps, causes := map[string]*MatrixApp{}, map[string]*MatrixCause{}
+	mainCause, mainN := map[string]string{}, map[string]int{}
+	for _, p := range pairs {
+		m.Failures += p.n
+		a := apps[p.app]
+		if a == nil {
+			a = &MatrixApp{App: p.app, Type: p.typ}
+			apps[p.app] = a
+		}
+		a.Failures += p.n
+		c := causes[p.cause]
+		if c == nil {
+			c = &MatrixCause{Key: p.cause, Kind: p.kind, ExitCode: p.exit, Message: causeHeadline(p.kind, p.cause, p.exit)}
+			causes[p.cause] = c
+		}
+		c.Failures += p.n
+		if p.n > mainN[p.app] || (p.n == mainN[p.app] && p.cause < mainCause[p.app]) {
+			mainCause[p.app], mainN[p.app] = p.cause, p.n
+		}
+	}
+	for _, a := range apps {
+		m.Apps = append(m.Apps, *a)
+	}
+	sort.Slice(m.Apps, func(i, j int) bool {
+		if m.Apps[i].Failures != m.Apps[j].Failures {
+			return m.Apps[i].Failures > m.Apps[j].Failures
+		}
+		return m.Apps[i].App < m.Apps[j].App
+	})
+	if len(m.Apps) > maxApps {
+		m.Apps = m.Apps[:maxApps]
+	}
+	ranked := make([]MatrixCause, 0, len(causes))
+	for _, c := range causes {
+		ranked = append(ranked, *c)
+	}
+	sort.Slice(ranked, func(i, j int) bool {
+		if ranked[i].Failures != ranked[j].Failures {
+			return ranked[i].Failures > ranked[j].Failures
+		}
+		return ranked[i].Key < ranked[j].Key
+	})
+	col := map[string]bool{}
+	for i, c := range ranked {
+		if i < maxCauses {
+			m.Causes = append(m.Causes, c)
+			col[c.Key] = true
+		}
+	}
+	for _, a := range m.Apps {
+		if key := mainCause[a.App]; !col[key] && extra > 0 {
+			m.Causes = append(m.Causes, *causes[key])
+			col[key] = true
+			extra--
+		}
+	}
+	row := map[string]int{}
+	for i, a := range m.Apps {
+		row[a.App] = i
+		m.Apps[i].Other = a.Failures
+	}
+	for _, p := range pairs {
+		if i, ok := row[p.app]; ok && col[p.cause] {
+			m.Cells = append(m.Cells, MatrixCell{App: p.app, Cause: p.cause, Failures: p.n})
+			m.Apps[i].Other -= p.n
+		}
+	}
+	return m
+}
+
+func (ch *CHClient) FetchFailureMatrix(ctx context.Context, f RunFilter) (*FailureMatrix, error) {
+	q, args := matrixSQL(f, 3000)
+	rows, err := ch.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("CH failure matrix: %w", err)
+	}
+	defer rows.Close()
+	var pairs []matrixPair
+	for rows.Next() {
+		var p matrixPair
+		var exit, n int64
+		if err := rows.Scan(&p.app, &p.cause, &p.kind, &p.typ, &exit, &n); err != nil {
+			return nil, fmt.Errorf("CH failure matrix scan: %w", err)
+		}
+		p.exit, p.n = int(exit), int(n)
+		pairs = append(pairs, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("CH failure matrix: %w", err)
+	}
+	return buildFailureMatrix(pairs, 12, 6, 3), nil
+}
+
 // StuckRuns splits the runs of the last 24 hours that have no result yet.
 type StuckRuns struct {
 	Running    int `json:"running"`

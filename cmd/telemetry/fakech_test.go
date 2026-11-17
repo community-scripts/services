@@ -392,6 +392,21 @@ func (f *fakeCH) route(q string, args []driver.NamedValue) [][]driver.Value {
 		return out
 	case strings.Contains(q, "AS a_app"):
 		return f.appRows(q, args)
+	case strings.Contains(q, "AS m_app"):
+		type pair struct{ app, cause string }
+		n, kinds, exits, types := map[pair]int64{}, map[pair]string{}, map[pair]int{}, map[pair]string{}
+		for _, r := range f.matching(q, args) {
+			kind, key := r.cause(q)
+			p := pair{r.app, key}
+			n[p]++
+			kinds[p], exits[p], types[p] = kind, r.exit, r.typ
+		}
+		var out [][]driver.Value
+		for p, c := range n {
+			out = append(out, []driver.Value{p.app, p.cause, kinds[p], types[p], int64(exits[p]), c})
+		}
+		sort.Slice(out, func(i, j int) bool { return out[i][5].(int64) > out[j][5].(int64) })
+		return out
 	case strings.Contains(q, "r_last_seen >= ?"):
 		var running, stalled, nores int64
 		for _, r := range f.matching(q, args) {
@@ -774,6 +789,57 @@ func TestDashboardFiguresArePerRun(t *testing.T) {
 	}
 	if len(d.DailyStats) != 1 || d.Apps[0].Label != "docker" {
 		t.Errorf("daily %+v apps %+v", d.DailyStats, d.Apps)
+	}
+	if d.Bucket != "hour" || len(d.Timeline) == 0 {
+		t.Errorf("today is bucketed by hour: %s %d", d.Bucket, len(d.Timeline))
+	}
+}
+
+func TestFailureMatrixCountsFailedRunsPerAppAndCause(t *testing.T) {
+	ch, _ := newFakeCH(t)
+	m, err := ch.FetchFailureMatrix(context.Background(), RunFilter{Days: 1, Traces: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Failures != 6 || len(m.Apps) != 2 || m.Apps[0].App != "immich" || m.Apps[0].Failures != 5 || m.Apps[0].Other != 0 {
+		t.Fatalf("rows %+v of %d failures", m.Apps, m.Failures)
+	}
+	cells := map[string]int{}
+	for _, c := range m.Cells {
+		cells[c.App+"|"+c.Cause] = c.Failures
+	}
+	if cells["immich|npm ERR! code ENOSPC"] != 3 || cells["immich|$STD apt-get install -y libvips-dev"] != 2 || len(cells) != 3 {
+		t.Errorf("cells %+v", cells)
+	}
+	if m.Causes[0].Key != "npm ERR! code ENOSPC" || m.Causes[0].Kind != "message" || m.Causes[0].ExitCode != 239 {
+		t.Errorf("columns %+v", m.Causes)
+	}
+
+	anon, err := ch.FetchFailureMatrix(context.Background(), RunFilter{Days: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range anon.Causes {
+		if c.Kind != "exit_code" || !strings.HasPrefix(c.Message, "Exit ") {
+			t.Errorf("a column carries client text without the token: %+v", c)
+		}
+	}
+}
+
+func TestFailureMatrixKeepsTheMainCauseOfEveryRow(t *testing.T) {
+	pairs := []matrixPair{
+		{app: "a", cause: "wide", n: 5}, {app: "b", cause: "wide", n: 4}, {app: "c", cause: "wide", n: 1},
+		{app: "c", cause: "own", n: 3}, {app: "c", cause: "rare", n: 1}, {app: "d", cause: "tail", n: 1},
+	}
+	m := buildFailureMatrix(pairs, 3, 1, 1)
+	if len(m.Apps) != 3 || m.Apps[0].App != "a" || m.Apps[1].App != "c" || m.Failures != 15 {
+		t.Fatalf("rows %+v of %d failures", m.Apps, m.Failures)
+	}
+	if len(m.Causes) != 2 || m.Causes[0].Key != "wide" || m.Causes[0].Failures != 10 || m.Causes[1].Key != "own" {
+		t.Fatalf("columns %+v", m.Causes)
+	}
+	if m.Apps[1].Failures != 5 || m.Apps[1].Other != 1 || len(m.Cells) != 4 {
+		t.Errorf("row c %+v, cells %+v", m.Apps[1], m.Cells)
 	}
 }
 
