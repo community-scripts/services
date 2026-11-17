@@ -188,10 +188,60 @@ func TestExitCodeDescriptionsMirrorTheEngine(t *testing.T) {
 		3:   "Command-specific error",
 		64:  "Missing or invalid input (a required setting was not given)",
 		115: "Engine or install script could not be downloaded",
+		255: "Fatal error (exit 255 from qm, pct, ssh or dpkg)",
 	}
 	for code, desc := range want {
 		if got := getExitCodeDescription(code); got != desc {
 			t.Errorf("exit %d = %q, want %q", code, got, desc)
 		}
+	}
+}
+
+// All 63 exit-255 failures in a week were filed as "apt"; 53 came from qm or
+// pct, none from dpkg. Payloads from /api/records, truncated.
+func TestExit255IsDecidedByTheCommand(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+		want string
+	}{
+		{
+			name: "qm start in a VM script",
+			text: "exit_code=255 | DPKG: Fatal internal error | step: Starting Home Assistant OS VM | at line 157: $STD qm start $VMID\n---\n" +
+				"[2026-11-11 22:14:36] [INFO] Starting Home Assistant OS VM",
+			want: "proxmox",
+		},
+		{
+			name: "pct start in a host tool",
+			text: "exit_code=255 | DPKG: Fatal internal error | at line 88: pct start \"$container\"",
+			want: "proxmox",
+		},
+		{
+			name: "qm create with a path and ${STD:-}",
+			text: "exit_code=255 | DPKG: Fatal internal error | step: Creating a Fedora VM | at line 40: ${STD:-} /usr/sbin/qm create 106 -agent 1",
+			want: "proxmox",
+		},
+		{
+			name: "a real dpkg failure is still apt",
+			text: "exit_code=255 | DPKG: Fatal internal error | at line 12: dpkg -i pkg.deb\n---\ndpkg: error processing archive pkg.deb",
+			want: "apt",
+		},
+		{
+			name: "pct named only in the output is not the command",
+			text: "exit_code=255 | DPKG: Fatal internal error | at line 5: ssh root@host true\n---\npct list",
+			want: "unknown",
+		},
+		{
+			name: "no command and no evidence stays unknown",
+			text: "exit_code=255 | DPKG: Fatal internal error | step: after Loaded 12 containers\n---\nUpdate failed for container 111",
+			want: "unknown",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := deriveErrorCategory(255, c.text); got != c.want {
+				t.Errorf("deriveErrorCategory(255, …) = %q, want %q", got, c.want)
+			}
+		})
 	}
 }
