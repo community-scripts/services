@@ -182,11 +182,17 @@ The run endpoints share these filters: `days` (1 to 365), `repo` (`ProxmoxVE`,
   `setups_failed`, `top_cause`, `last_failure`, `last_success` and `failing_now`
   (last failure newer than the last success). `limit` goes up to 500.
 
-Without `Authorization: Bearer $TELEMETRY_ADMIN_TOKEN` the run endpoints leave out
-`error`, `failed_command`, `error_message` and `error_step` (records carry
-`traces_withheld`), every cause is its exit code and `message` is ignored; any other
+Without `Authorization: Bearer` and either `$TELEMETRY_ADMIN_TOKEN` or `$TELEMETRY_TRACE_PASSWORD`
+the run endpoints leave out `error`, `failed_command`, `error_message` and `error_step` (records
+carry `traces_withheld`), every cause is its exit code and `message` is ignored; any other
 `Authorization` header answers 403. `/api/*` and `/metrics` take `READ_RATE_LIMIT_RPM`
 requests a minute per client IP (default 300, 0 turns it off); the admin token is exempt.
+
+`TELEMETRY_TRACE_PASSWORD` is the one to hand to contributors: it shows the failure text and
+does nothing else, it stays rate-limited and `/api/admin/*` refuses it. The dashboard asks for
+it where a trace is withheld and keeps it for the browser tab. Unset, only the admin token
+shows traces. Use a long random value, for example `openssl rand -base64 32`; ASCII only, as it
+travels in a header.
 
 `/api/admin/migrate-script` takes `{"slugs": ["vane"], "from": "DevScripts", "to": "ProxmoxVE"}` with
 `Authorization: Bearer $TELEMETRY_ADMIN_TOKEN` and answers `{"moved": n, "slugs": [...], "days": n}`.

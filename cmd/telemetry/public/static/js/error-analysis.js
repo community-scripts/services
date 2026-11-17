@@ -466,6 +466,11 @@
     R.initChrome();
     readURL();
     bind();
+    // With traces readable a cause is its message, so an open exit-code cause no longer exists.
+    R.onUnlock(function () {
+      if (open && open.kind === 'cause') open = null;
+      load();
+    });
     return load();
   }
 

@@ -87,6 +87,9 @@ type Config struct {
 
 	// AdminToken guards /api/admin/*; unset disables those endpoints.
 	AdminToken string
+
+	// TracePassword lets a reader see the failure text and nothing else; it is meant to be handed to contributors.
+	TracePassword string
 }
 
 // TelemetryIn matches payload from api.func (bash client)
@@ -1607,11 +1610,12 @@ func main() {
 		GitHubRepo:    env("GITHUB_REPO", "ProxmoxVE"),
 		AdminPassword: env("ADMIN_PASSWORD", ""),
 		AdminToken:    env("TELEMETRY_ADMIN_TOKEN", ""),
+		TracePassword: env("TELEMETRY_TRACE_PASSWORD", ""),
 	}
 
 	// Debug: log whether critical env vars are set (not the values!)
-	log.Printf("CONFIG: ADMIN_PASSWORD set=%v (len=%d), TELEMETRY_ADMIN_TOKEN set=%v, GITHUB_TOKEN set=%v, GITHUB_OWNER=%s, GITHUB_REPO=%s",
-		cfg.AdminPassword != "", len(cfg.AdminPassword), cfg.AdminToken != "", cfg.GitHubToken != "", cfg.GitHubOwner, cfg.GitHubRepo)
+	log.Printf("CONFIG: ADMIN_PASSWORD set=%v (len=%d), TELEMETRY_ADMIN_TOKEN set=%v, TELEMETRY_TRACE_PASSWORD set=%v, GITHUB_TOKEN set=%v, GITHUB_OWNER=%s, GITHUB_REPO=%s",
+		cfg.AdminPassword != "", len(cfg.AdminPassword), cfg.AdminToken != "", cfg.TracePassword != "", cfg.GitHubToken != "", cfg.GitHubOwner, cfg.GitHubRepo)
 
 	var pt *ProxyTrust
 	if strings.TrimSpace(env("TRUSTED_PROXIES_CIDR", "")) != "" {
@@ -1644,7 +1648,10 @@ func main() {
 
 	rl := NewRateLimiter(cfg.RateLimitRPM, cfg.RateBurst)
 	readRL := NewRateLimiter(cfg.ReadRateLimitRPM, cfg.ReadRateLimitRPM)
-	traces := func(r *http.Request) bool { return validAdminToken(r.Header.Get("Authorization"), cfg.AdminToken) }
+	traces := func(r *http.Request) bool {
+		auth := r.Header.Get("Authorization")
+		return validAdminToken(auth, cfg.AdminToken) || validAdminToken(auth, cfg.TracePassword)
+	}
 
 	// Initialize cache
 	cache := NewCache(CacheConfig{
@@ -2377,7 +2384,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           securityHeaders(readGuard(mux, readRL, pt, cfg.AdminToken)),
+		Handler:           securityHeaders(readGuard(mux, readRL, pt, cfg.AdminToken, cfg.TracePassword)),
 		ReadHeaderTimeout: 3 * time.Second,
 	}
 
@@ -2450,8 +2457,9 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-// readGuard rate-limits the API per client IP; a valid admin token is exempt, any other Authorization is refused.
-func readGuard(next http.Handler, rl *RateLimiter, pt *ProxyTrust, adminToken string) http.Handler {
+// readGuard rate-limits the API per client IP; a valid admin token is exempt. The trace password
+// passes but stays limited, which also slows guessing it. Any other Authorization is refused.
+func readGuard(next http.Handler, rl *RateLimiter, pt *ProxyTrust, adminToken, tracePassword string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/metrics" {
 			next.ServeHTTP(w, r)
@@ -2471,7 +2479,7 @@ func readGuard(next http.Handler, rl *RateLimiter, pt *ProxyTrust, adminToken st
 			http.Error(w, "rate limited", http.StatusTooManyRequests)
 			return
 		}
-		if auth != "" {
+		if auth != "" && !validAdminToken(auth, tracePassword) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}

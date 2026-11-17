@@ -210,7 +210,7 @@
       if (trace) {
         html += '<details class="trace" open><summary>Trace, ' + lines + (lines === 1 ? ' line' : ' lines') + '</summary><pre>' + esc(trace) + '</pre></details>';
       } else {
-        html += '<p class="muted">' + (rec.traces_withheld ? 'The trace is shown to maintainers only.' : 'No trace was sent with this run.') + '</p>';
+        html += rec.traces_withheld ? unlockForm() : '<p class="muted">No trace was sent with this run.</p>';
       }
       html += '<div class="rd-actions">' +
         (trace ? '<button type="button" class="btn" data-copy="trace">Copy trace</button>' : '') +
@@ -365,13 +365,72 @@
     setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
   }
 
+  // The trace password is kept for this tab. With it the API also returns the text a run reported.
+  const PASSWORD_KEY = 'tracePassword';
+  const unlockListeners = [];
+  let password = '';
+  try { password = sessionStorage.getItem(PASSWORD_KEY) || ''; } catch (e) { /* storage unavailable */ }
+  function setPassword(p) {
+    password = p;
+    try {
+      if (p) sessionStorage.setItem(PASSWORD_KEY, p); else sessionStorage.removeItem(PASSWORD_KEY);
+    } catch (e) { /* storage unavailable */ }
+  }
+  function request(pw) {
+    return pw ? { cache: 'no-store', headers: { Authorization: 'Bearer ' + pw } } : { cache: 'no-store' };
+  }
+  function onUnlock(fn) { unlockListeners.push(fn); }
+
   async function getJSON(url) {
-    const r = await fetch(url, { cache: 'no-store' });
+    let r = await fetch(url, request(password));
+    // A password the server stopped accepting would otherwise fail every request of the page.
+    if (r.status === 403 && password) {
+      setPassword('');
+      r = await fetch(url, request(''));
+    }
     if (!r.ok) {
       const msg = (await r.text()).trim();
       throw new Error(msg || 'The server answered ' + r.status);
     }
     return r.json();
+  }
+
+  function unlockForm() {
+    return '<form class="unlock" data-unlock><span>The trace is shown to maintainers only.</span>' +
+      '<input type="password" class="search-input" name="password" placeholder="Password" aria-label="Trace password" autocomplete="current-password" required>' +
+      '<button type="submit" class="btn">Show trace</button><span class="form-result" role="status"></span></form>';
+  }
+
+  // Loads one run again; with the password set the answer carries its trace.
+  async function fetchRun(rec) {
+    const started = parseTime(rec.started_at);
+    const q = new URLSearchParams({
+      type: 'all', limit: '1', days: String(started ? Math.floor((Date.now() - started.getTime()) / 86400000) + 2 : 365),
+    });
+    if (rec.nsapp) q.set('app', rec.nsapp);
+    if (rec.execution_id) q.set('execution_id', rec.execution_id); else q.set('random_id', rec.random_id || '');
+    const res = await getJSON('/api/records?' + q.toString());
+    return (res.records || [])[0] || null;
+  }
+
+  async function unlock(form) {
+    const pw = form.elements.password.value;
+    const result = form.querySelector('.form-result');
+    const say = function (msg) { if (result) result.textContent = msg; };
+    if (!pw) return;
+    try {
+      const probe = await fetch('/api/exit-codes', request(pw));
+      if (probe.status === 403) { say('That password is not accepted.'); return; }
+      if (!probe.ok) throw new Error('the server answered ' + probe.status);
+      setPassword(pw);
+      if (current && form.closest('#recordDialog')) {
+        const fresh = await fetchRun(current);
+        if (fresh) openRecord(fresh); else say('The password is accepted, but this run could not be loaded again.');
+      }
+      unlockListeners.forEach(function (fn) { fn(); });
+    } catch (e) {
+      say('Could not check the password: ' + e.message);
+    }
   }
 
   let current = null;
@@ -405,6 +464,13 @@
     if (t.tagName === 'DIALOG') t.close();
   });
 
+  document.addEventListener('submit', function (e) {
+    const form = e.target && e.target.closest ? e.target.closest('[data-unlock]') : null;
+    if (!form) return;
+    e.preventDefault();
+    unlock(form);
+  });
+
   function applyTheme(t) {
     if (t === 'light') document.documentElement.setAttribute('data-theme', 'light');
     else document.documentElement.removeAttribute('data-theme');
@@ -433,6 +499,7 @@
     hostName: hostName, setupName: setupName, stageTimeline: stageTimeline, recordDialogHTML: recordDialogHTML,
     runMarkdown: runMarkdown, causeMarkdown: causeMarkdown, mdCell: mdCell, columnsSVG: columnsSVG, copyText: copyText,
     download: download, getJSON: getJSON, openRecord: openRecord, closeRecord: closeRecord, initChrome: initChrome,
+    unlockForm: unlockForm, onUnlock: onUnlock,
     current: function () { return current; },
   };
 })();

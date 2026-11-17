@@ -496,6 +496,11 @@ details.fold[open] > summary { border-bottom: 1px solid var(--border-color); }
 dialog.drill-dialog { width: min(1080px, calc(100vw - 24px)); }
 dialog.drill-dialog > div:focus { outline: none; }
 
+/* Trace password */
+.unlock { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; font-size: 13px; color: var(--text-secondary); }
+.unlock .search-input { min-width: 0; width: 180px; }
+.unlock .form-result { color: var(--accent-red); }
+
 /* Failure matrix */
 table.matrix { width: auto; border-collapse: separate; border-spacing: 3px; margin: 10px 13px 12px; }
 table.matrix th, table.matrix td { padding: 0; border: none; background: none; vertical-align: middle; }

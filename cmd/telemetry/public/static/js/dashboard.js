@@ -319,7 +319,7 @@
       '<span class="num nowrap">' + esc(R.duration(r.duration)) + '</span></summary>' +
       '<div class="run-body">' + (facts.length ? '<dl class="kv">' + facts.map(function (f) { return '<div><dt>' + f[0] + '</dt><dd>' + f[1] + '</dd></div>'; }).join('') + '</dl>' : '') +
       (tail ? '<pre class="run-trace">' + esc(tail) + '</pre>'
-        : r.status === 'failed' ? '<p class="muted">' + (r.traces_withheld ? 'The trace is shown to maintainers only.' : 'No trace was sent with this run.') + '</p>' : '') +
+        : r.status === 'failed' ? (r.traces_withheld ? R.unlockForm() : '<p class="muted">No trace was sent with this run.</p>') : '') +
       '<div class="rd-actions"><button type="button" class="btn" data-' + p + 'run="' + i + '">Open run</button>' +
       '<button type="button" class="btn" data-' + p + 'md="' + i + '">Copy as Markdown</button></div></div></details>';
   }
@@ -895,6 +895,12 @@
     R.initChrome();
     readURL();
     bind();
+    // With traces readable a cause is its message, so an exit-code key no longer names one.
+    R.onUnlock(function () {
+      state.cause = '';
+      if (triage.sel && triage.sel.kind === 'cause') { triage.sel = null; state.open = ''; }
+      refresh();
+    });
     $('autoRefresh').checked = auto;
     setAutoRefresh(auto);
     return refresh();

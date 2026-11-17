@@ -150,7 +150,7 @@ type RunFilter struct {
 	ExecutionID string
 	RandomID    string
 
-	// Traces lets the answer carry text from the client's log; only the admin token sets it.
+	// Traces lets the answer carry text from the client's log; only the admin token or the trace password sets it.
 	Traces bool
 
 	// Fixed windows that ignore Days, for "right now" figures.

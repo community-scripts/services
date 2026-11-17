@@ -10,7 +10,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500..700&family=JetBrains+Mono:wght@400;500;700&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/css/dashboard.css?v=6">
+    <link rel="stylesheet" href="/static/css/dashboard.css?v=7">
     <link rel="stylesheet" href="/static/css/error-analysis.css?v=4">
 </head>
 <body>
@@ -94,7 +94,7 @@
             <div class="section-header">
                 <div>
                     <h2>What is failing</h2>
-                    <p>One row per cause: the error message, or for older reports the failing command or exit code. Without the admin token every cause is its exit code. Setups counts distinct hardware and host combinations, so one host retrying stays one setup.</p>
+                    <p>One row per cause: the error message, or for older reports the failing command or exit code. Without the admin token or the trace password every cause is its exit code. Setups counts distinct hardware and host combinations, so one host retrying stays one setup.</p>
                 </div>
             </div>
             <div class="table-wrapper">
@@ -158,13 +158,13 @@
         </div>
 
         <section class="section-card api-note">
-            <div class="section-header"><div><h2>Query this data directly</h2><p>Every table on this page comes from a public JSON endpoint. All of them take the filters above. Traces, failing commands, messages and steps come only with <code>Authorization: Bearer</code> and the admin token.</p></div></div>
+            <div class="section-header"><div><h2>Query this data directly</h2><p>Every table on this page comes from a public JSON endpoint. All of them take the filters above. Traces, failing commands, messages and steps come only with <code>Authorization: Bearer</code> and the admin token or the trace password.</p></div></div>
             <div class="api-body">
                 <dl class="api-list">
                     <div><dt><code>GET /api/errors</code></dt><dd>Everything on this page: summary, causes, apps, exit codes, failures over time and stuck runs.</dd></div>
                     <div><dt><code>GET /api/causes</code></dt><dd>Failure causes with apps, setups, first and last seen, trend and example run IDs. <code>examples=full</code> adds the example runs; <code>limit</code> up to 200.</dd></div>
                     <div><dt><code>GET /api/app-errors</code></dt><dd>Apps with at least one failure: runs, outcomes, failure rate, setups, top cause, last failure and success, failing now.</dd></div>
-                    <div><dt><code>GET /api/records</code></dt><dd>Single runs with merged metadata, stage timestamps and, with the admin token, the trace. Filter with <code>cause</code>, <code>message</code> (admin token), <code>app</code>, <code>exit_code</code>, <code>category</code>, <code>status</code>, <code>execution_id</code>, <code>random_id</code>, <code>search</code>, <code>os</code>; page with <code>page</code>, <code>limit</code> (up to 100) and <code>sort</code>.</dd></div>
+                    <div><dt><code>GET /api/records</code></dt><dd>Single runs with merged metadata, stage timestamps and, with the admin token or the trace password, the trace. Filter with <code>cause</code>, <code>message</code> (same access), <code>app</code>, <code>exit_code</code>, <code>category</code>, <code>status</code>, <code>execution_id</code>, <code>random_id</code>, <code>search</code>, <code>os</code>; page with <code>page</code>, <code>limit</code> (up to 100) and <code>sort</code>.</dd></div>
                 </dl>
                 <p class="api-params">Filters: <code>days</code> (1 to 365), <code>repo</code> (ProxmoxVE, DevScripts, external), <code>slug</code> (owner/repo), <code>platform</code> (pve, incus), <code>type</code> (lxc, vm, turnkey, pve, addon, tool, install, all; rates default to LXC and VM), <code>app</code> (exact name). <code>status</code> takes success, failed, aborted, unknown (no result) or in_progress.</p>
                 <p class="api-params">This view as JSON: <a id="apiLink" href="/api/errors">/api/errors</a></p>
@@ -206,7 +206,7 @@
         </form>
     </dialog>
 
-    <script src="/static/js/runs.js?v=3"></script>
-    <script src="/static/js/error-analysis.js?v=6"></script>
+    <script src="/static/js/runs.js?v=4"></script>
+    <script src="/static/js/error-analysis.js?v=7"></script>
 </body>
 </html>

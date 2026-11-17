@@ -13,30 +13,34 @@ if (!fixtures) {
   console.error('usage: node testdata/pages-smoke.js <fixtures dir> [<anonymous fixtures dir>]');
   process.exit(2);
 }
-const fixture = (n) => JSON.parse(fs.readFileSync(path.join(fixtures, n), 'utf8'));
-let allRecords = fixture('records.json').records;
+const fixture = (n, dir) => JSON.parse(fs.readFileSync(path.join(dir || fixtures, n), 'utf8'));
+// Requests carrying the trace password are answered from the fixtures with traces.
+const tracedFixtures = fixtures;
+const PASSWORD = 'tr4ces';
 
 let failures = 0;
 const fail = (msg) => { console.error('  ' + msg); failures++; };
 const expect = (cond, msg) => { if (!cond) fail(msg); };
 
 // Answers like the API: /api/records honours the run filters the pages send.
-function api(url) {
+function api(url, dir) {
   const u = new URL(url, 'http://localhost');
   const q = u.searchParams;
   switch (u.pathname) {
-    case '/api/dashboard': return fixture('dashboard.json');
-    case '/api/errors': return fixture('errors.json');
-    case '/api/causes': return fixture('causes.json');
-    case '/api/app-errors': return fixture('app-errors.json');
-    case '/api/repo-slugs': return fixture('repo-slugs.json');
-    case '/api/scripts': return fixture('scripts.json');
-    case '/api/script-detail': return q.get('app') === 'immich' ? fixture('script-detail.json') : null;
+    case '/api/dashboard': return fixture('dashboard.json', dir);
+    case '/api/errors': return fixture('errors.json', dir);
+    case '/api/causes': return fixture('causes.json', dir);
+    case '/api/app-errors': return fixture('app-errors.json', dir);
+    case '/api/repo-slugs': return fixture('repo-slugs.json', dir);
+    case '/api/scripts': return fixture('scripts.json', dir);
+    case '/api/script-detail': return q.get('app') === 'immich' ? fixture('script-detail.json', dir) : null;
+    case '/api/exit-codes': return {};
     case '/api/records': {
-      let recs = allRecords.filter((r) =>
+      let recs = fixture('records.json', dir).records.filter((r) =>
         (!q.get('status') || r.status === q.get('status')) &&
         (!q.get('cause') || r.cause === q.get('cause')) &&
         (!q.get('app') || r.nsapp === q.get('app')) &&
+        (!q.get('execution_id') || r.execution_id === q.get('execution_id')) &&
         (!q.get('exit_code') || String(r.exit_code || 0) === q.get('exit_code')) &&
         (!q.get('search') || r.nsapp.includes(q.get('search'))));
       const limit = Number(q.get('limit') || 50), page = Number(q.get('page') || 1);
@@ -48,7 +52,7 @@ function api(url) {
   return null;
 }
 
-function page(template, scripts, search) {
+function page(template, scripts, search, session) {
   const html = fs.readFileSync(path.join(pub, 'templates', template), 'utf8');
   const ids = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]));
   const elements = {};
@@ -97,11 +101,18 @@ function page(template, scripts, search) {
     location: { pathname: template === 'dashboard.html' ? '/' : '/' + template.replace('.html', ''), search: search || '', origin: 'http://localhost', href: 'http://localhost/' },
     history: { replaceState(_s, _t, url) { ctx.location.search = url.includes('?') ? url.slice(url.indexOf('?')) : ''; } },
     localStorage: { getItem: () => null, setItem() {} },
+    sessionStorage: {
+      getItem: (k) => (session && session[k]) || null,
+      setItem(k, v) { if (session) session[k] = v; },
+      removeItem(k) { if (session) delete session[k]; },
+    },
     navigator: { clipboard: { writeText(t) { clipboard.push(t); return Promise.resolve(); } } },
     isSecureContext: true,
     __NO_AUTOSTART__: true,
-    fetch: async (url) => {
-      const body = api(url);
+    fetch: async (url, opts) => {
+      const auth = opts && opts.headers && opts.headers.Authorization;
+      if (auth && auth !== 'Bearer ' + PASSWORD) return { ok: false, status: 403, text: async () => 'forbidden', json: async () => ({}) };
+      const body = api(url, auth ? tracedFixtures : fixtures);
       if (!body) return { ok: false, status: 404, text: async () => 'no fixture for ' + url, json: async () => ({}) };
       return { ok: true, status: 200, text: async () => JSON.stringify(body), json: async () => JSON.parse(JSON.stringify(body)) };
     },
@@ -112,6 +123,7 @@ function page(template, scripts, search) {
     vm.runInContext(fs.readFileSync(path.join(pub, 'static', 'js', s), 'utf8'), ctx, { filename: s });
   }
   const click = (target) => listeners.click.forEach((fn) => fn({ target, preventDefault() {} }));
+  const submit = (target) => listeners.submit.forEach((fn) => fn({ target, preventDefault() {} }));
   // A fake event target whose closest() answers for one selector.
   const target = (selector, attrs) => ({
     tagName: 'BUTTON',
@@ -119,7 +131,7 @@ function page(template, scripts, search) {
   });
   // Ids the scripts render themselves are fine once some markup carries them.
   const unknown = () => [...missing].filter((id) => !Object.values(elements).some((e) => String(e.innerHTML).includes('id="' + id + '"')));
-  return { ctx, el: (id) => document.getElementById(id), missing: unknown, click, target, downloads, blobs, clipboard };
+  return { ctx, el: (id) => document.getElementById(id), missing: unknown, click, submit, target, downloads, blobs, clipboard };
 }
 
 const tick = () => new Promise((r) => setTimeout(r, 20));
@@ -326,7 +338,6 @@ async function scriptsPage() {
 
 async function anonymous() {
   fixtures = anonymousFixtures;
-  allRecords = fixture('records.json').records;
   const leaked = (html) => ['npm ERR!', '$STD', 'Building Immich', 'Unable to locate package'].filter((s) => html.includes(s));
 
   const d = page('dashboard.html', ['runs.js', 'dashboard.js']);
@@ -362,7 +373,29 @@ async function anonymous() {
     const l = leaked(html);
     expect(!l.length, 'the anonymous ' + name + ' shows ' + l.join(', '));
   }
-  return new Set([...d.missing(), ...e.missing(), ...s.missing()]);
+
+  // The password, entered in the open run dialog, shows that run's trace and reloads the page with traces.
+  const result = { textContent: '' };
+  const form = (pw) => ({
+    elements: { password: { value: pw } }, querySelector: () => result,
+    closest(sel) { return sel === '[data-unlock]' || sel === '#recordDialog' ? this : null; },
+  });
+  expect(dlg.includes('data-unlock') && dlg.includes('type="password"'), 'the anonymous record dialog has no password field');
+  d.submit(form('wrong'));
+  await tick();
+  expect(result.textContent.includes('not accepted') && !d.el('recordBody').innerHTML.includes('npm ERR!'), 'a wrong password is not refused');
+  d.submit(form(PASSWORD));
+  await tick();
+  expect(d.el('recordBody').innerHTML.includes('npm ERR! syscall write') && !d.el('recordBody').innerHTML.includes('data-unlock'),
+    'the password does not show the trace in the open run dialog');
+  expect(d.el('triageList').innerHTML.includes('npm ERR! code ENOSPC'), 'the page does not reload with messages after the password');
+
+  // A stored password the server no longer accepts is dropped instead of failing every request.
+  const session = { tracePassword: 'rotated' };
+  const stale = page('dashboard.html', ['runs.js', 'dashboard.js'], '', session);
+  await stale.ctx.Dashboard.init();
+  expect(stale.el('triageList').innerHTML.includes('immich') && !session.tracePassword, 'a rejected stored password breaks the page');
+  return new Set([...d.missing(), ...e.missing(), ...s.missing(), ...stale.missing()]);
 }
 
 (async () => {

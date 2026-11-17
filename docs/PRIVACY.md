@@ -131,7 +131,7 @@ All aggregated statistics are publicly visible on the [dashboard](https://teleme
 | **Database** | PocketBase (SQLite-based, self-hosted) |
 | **Retention** | Data is stored indefinitely for trend analysis |
 | **Encryption** | TLS 1.3 in transit, encrypted storage at rest |
-| **Access** | Write: telemetry service only. Read: dashboard and API (public) without `error`, `error_message`, `error_step` and `failed_command`; those only with the maintainers' admin token |
+| **Access** | Write: telemetry service only. Read: dashboard and API (public) without `error`, `error_message`, `error_step` and `failed_command`; those only with the maintainers' admin token or the trace password given to contributors |
 | **Third parties** | None — no data is shared with or sold to third parties |
 | **Backups** | Automated, encrypted, same data center |
 
