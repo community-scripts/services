@@ -53,6 +53,11 @@ type DashboardData struct {
 	MinRuns     int                       `json:"min_runs"`
 	TopCauses   []Cause                   `json:"top_causes,omitempty"`
 	FailingApps []AppErrorStat            `json:"failing_apps,omitempty"`
+
+	// Bucket is "hour" for a one-day period and "day" otherwise.
+	Bucket        string         `json:"bucket"`
+	Timeline      []TimePoint    `json:"timeline"`
+	FailureMatrix *FailureMatrix `json:"failure_matrix,omitempty"`
 }
 
 // PlatformCount holds per-platform (pve/incus) installation counts.

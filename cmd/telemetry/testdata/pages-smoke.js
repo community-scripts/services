@@ -133,13 +133,11 @@ async function dashboard() {
     expect(cards.includes(s), 'cards lack ' + JSON.stringify(s));
   }
   expect(!cards.includes('Ctrl+C'), 'aborted is not only Ctrl+C');
-  expect(p.el('topCauses').innerHTML.includes('npm ERR! code ENOSPC'), 'top causes lack the npm cause');
-  expect(p.el('topCauses').innerHTML.includes('/error-analysis?'), 'causes do not link into the error page');
-  const failing = p.el('failingApps').innerHTML;
-  expect(failing.includes('immich') && failing.includes('Failing'), 'highest failure rates lack immich failing now');
+  expect(cards.includes('data-drill="failed"') && cards.includes('data-drill="aborted"'), 'the failed and aborted cards do not open their runs');
   expect(p.el('topApps').innerHTML.includes('docker'), 'top applications lack docker');
   expect(p.el('breakdown').innerHTML.includes('Platform') && p.el('breakdown').innerHTML.includes('Proxmox VE'), 'breakdown lacks platforms');
-  expect(p.el('dailySection').hidden === true, 'the daily chart shows for a one-day period');
+  expect(p.el('breakdown').innerHTML.includes('data-bdim="os"'), 'breakdown rates do not open their failed runs');
+  expect(p.el('timelineSection').hidden || p.el('timeline').innerHTML.includes('<svg'), 'the runs over time section shows without a chart');
 
   const log = p.el('logBody').innerHTML;
   const recs = p.ctx.Dashboard.records();
@@ -177,6 +175,62 @@ async function dashboard() {
   expect(p.el('recordBody').innerHTML.includes('No final status was received; the run stopped reporting after configuring at'),
     'the no result dialog does not explain itself');
   expect(p.el('recordBody').innerHTML.includes('tl-silent'), 'the no result timeline does not mark the silent stage');
+  p.el('recordDialog').close();
+
+  // Error analysis: the app with the highest graded failure rate leads and is open.
+  const apps = p.el('triageList').innerHTML;
+  expect(apps.includes('immich') && apps.includes('Failing') && apps.includes('npm ERR! code ENOSPC'), 'the app list lacks immich failing now with its top cause');
+  expect(apps.indexOf('data-id="immich"') < apps.indexOf('data-id="docker"'), 'the app list is not ranked by failure rate');
+  let pane = p.el('triagePane').innerHTML;
+  for (const s of ['immich', 'Failure rate', 'Failed setups', 'finished runs', 'Common denominators', 'during configuring', 'npm ERR! code ENOSPC',
+    '$STD apt-get install -y libvips-dev', 'Intel N100', 'Host setups', '/error-analysis?', 'Open run']) {
+    expect(pane.includes(s), 'the app pane lacks ' + JSON.stringify(s));
+  }
+  p.click(p.target('[data-ppick]', { 'data-ppick': '0' }));
+  expect(p.el('triagePane').innerHTML.includes('Failed runs <span class="count">3</span>'), 'selecting a cause does not filter the runs of the app');
+  p.click(p.target('[data-prun]', { 'data-prun': '0' }));
+  expect(p.el('recordDialog').open && p.el('recordBody').innerHTML.includes('What went wrong'), 'a run of the app pane does not open the record dialog');
+  p.el('recordDialog').close();
+
+  p.click(p.target('[data-tab]', { 'data-tab': 'causes' }));
+  await tick();
+  expect(p.el('triageList').innerHTML.includes('npm ERR! code ENOSPC'), 'the cause list lacks the npm cause');
+  expect(p.ctx.location.search.includes('open=cause'), 'the open cause does not reach the URL');
+  pane = p.el('triagePane').innerHTML;
+  for (const s of ['Filter the page to this cause', '/error-analysis?', 'cause=', 'immich', 'Copy as Markdown', 'Last 24 h']) {
+    expect(pane.includes(s), 'the cause pane lacks ' + JSON.stringify(s));
+  }
+
+  const matrix = p.el('matrix').innerHTML;
+  for (const s of ['immich', 'docker', 'npm ERR! code ENOSPC', 'data-cell="0"', 'data-scope-cause', 'All apps']) {
+    expect(matrix.includes(s), 'the failure matrix lacks ' + JSON.stringify(s));
+  }
+  p.click(p.target('[data-cell]', { 'data-cell': '0' }));
+  await tick();
+  let drill = p.el('drillBody').innerHTML;
+  expect(p.el('drillDialog').open, 'a matrix cell does not open its runs');
+  for (const s of ['immich: npm ERR! code ENOSPC', '3 runs', 'Group by', 'Intel N100']) {
+    expect(drill.includes(s), 'the matrix drill-down lacks ' + JSON.stringify(s));
+  }
+  p.click(p.target('[data-drun]', { 'data-drun': '0' }));
+  expect(p.el('recordDialog').open && p.el('recordBody').innerHTML.includes('What went wrong'), 'a drill-down run does not open the record dialog');
+  p.el('recordDialog').close();
+
+  p.click(p.target('[data-drill]', { 'data-drill': 'aborted' }));
+  await tick();
+  drill = p.el('drillBody').innerHTML;
+  for (const s of ['Aborted runs', '1 run', 'nginxproxymanager', 'Exit 130', 'do not count as failures']) {
+    expect(drill.includes(s), 'the aborted drill-down lacks ' + JSON.stringify(s));
+  }
+
+  p.click(p.target('[data-scope-app]', { 'data-scope-app': 'immich' }));
+  await tick();
+  expect(p.ctx.location.search.includes('app=immich'), 'the page scope does not reach the URL');
+  expect(p.el('scopeRow').hidden === false && p.el('scopeChips').innerHTML.includes('immich'), 'the page scope shows no chip');
+  expect(p.el('logBody').innerHTML.includes('immich') && !p.el('logBody').innerHTML.includes('jellyfin'), 'the log does not follow the page scope');
+  p.click(p.target('[data-unscope]', { 'data-unscope': 'app' }));
+  await tick();
+  expect(p.el('scopeRow').hidden === true && p.el('logBody').innerHTML.includes('jellyfin'), 'removing the chip does not clear the page scope');
   return p.missing();
 }
 
@@ -278,7 +332,13 @@ async function anonymous() {
   const d = page('dashboard.html', ['runs.js', 'dashboard.js']);
   d.ctx.Dashboard.state.limit = 100;
   await d.ctx.Dashboard.init();
-  expect(d.el('topCauses').innerHTML.includes('Exit 239'), 'anonymous top causes lack the exit code');
+  const anonPane = d.el('triagePane').innerHTML;
+  expect(anonPane.includes('Exit 239') && anonPane.includes('maintainers only'), 'the anonymous app pane lacks the exit code or does not say the trace is withheld');
+  const anonMatrix = d.el('matrix').innerHTML;
+  expect(anonMatrix.includes('239'), 'the anonymous failure matrix lacks the exit code');
+  d.click(d.target('[data-tab]', { 'data-tab': 'causes' }));
+  await tick();
+  expect(d.el('triageList').innerHTML.includes('Exit 239'), 'anonymous causes lack the exit code');
   const recs = d.ctx.Dashboard.records();
   d.click(d.target('[data-run]', { 'data-run': String(recs.findIndex((r) => r.execution_id === 'immich-0')) }));
   const dlg = d.el('recordBody').innerHTML;
@@ -296,7 +356,8 @@ async function anonymous() {
   await s.ctx.ScriptsPage.init();
   expect(s.el('scriptsBody').innerHTML.includes('Exit 239'), 'the anonymous immich row lacks its exit code');
 
-  for (const [name, html] of [['log', d.el('logBody').innerHTML], ['record dialog', dlg], ['causes', e.el('causesBody').innerHTML],
+  for (const [name, html] of [['log', d.el('logBody').innerHTML], ['record dialog', dlg], ['app pane', anonPane], ['failure matrix', anonMatrix],
+    ['cause list', d.el('triageList').innerHTML], ['cause pane', d.el('triagePane').innerHTML], ['causes', e.el('causesBody').innerHTML],
     ['drill-down', e.el('drillBox').innerHTML], ['scripts table', s.el('scriptsBody').innerHTML]]) {
     const l = leaked(html);
     expect(!l.length, 'the anonymous ' + name + ' shows ' + l.join(', '));
@@ -312,6 +373,7 @@ async function anonymous() {
     console.error('  ' + failures + ' problem(s)');
     process.exit(1);
   }
-  console.log('  pages render: dashboard cards, log, record dialog, error page tables, drill-down and export, scripts table and script dialog');
+  console.log('  pages render: dashboard cards, error analysis with its panes, failure matrix, drill-downs and page scope, log, record dialog, ' +
+    'error page tables, drill-down and export, scripts table and script dialog');
   process.exit(0);
 })().catch((e) => { console.error(e); process.exit(1); });

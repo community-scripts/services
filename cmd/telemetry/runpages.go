@@ -43,6 +43,8 @@ func (ch *CHClient) FetchDashboardData(ctx context.Context, f RunFilter) (*Dashb
 		dimCategory, dimType, dimSlug, dimTool, dimAddon}
 	if f.Days > 1 {
 		dims = append(dims, dimDay)
+	} else if f.Days == 1 {
+		dims = append(dims, dimHour)
 	}
 	var (
 		b               Breakdown
@@ -148,22 +150,46 @@ func (ch *CHClient) FetchDashboardData(ctx context.Context, f RunFilter) (*Dashb
 	} else {
 		data.DailyStats = buildDailyStats(map[string]BreakdownRow{time.Now().UTC().Format("2006-01-02"): b.one("all")}, 1, time.Now())
 	}
+	data.Bucket = "day"
+	if f.Days == 1 {
+		data.Bucket = "hour"
+	}
+	data.Timeline = runTimeline(b, data.Bucket, days, time.Now().UTC())
 	return data, nil
+}
+
+// runTimeline buckets runs by the hour for one day and by the day otherwise.
+func runTimeline(b Breakdown, bucket string, days int, now time.Time) []TimePoint {
+	var out []TimePoint
+	if bucket == "hour" {
+		byHour := byLabel(b["hour"])
+		for h := now.Truncate(24 * time.Hour); !h.After(now); h = h.Add(time.Hour) {
+			r := byHour[h.Format("2006-01-02 15:04:05")]
+			out = append(out, TimePoint{T: h.Format(time.RFC3339), Runs: r.Runs, Failed: r.Failed, Aborted: r.Aborted})
+		}
+		return out
+	}
+	for _, d := range buildDailyStats(byLabel(b["day"]), days, now) {
+		out = append(out, TimePoint{T: d.Date, Runs: d.Runs, Failed: d.Failed, Aborted: d.Aborted})
+	}
+	return out
 }
 
 // FetchDashboardPage adds the error analysis panels to the dashboard figures.
 func (ch *CHClient) FetchDashboardPage(ctx context.Context, f RunFilter) (*DashboardData, error) {
 	var (
-		data         *DashboardData
-		err          error
-		causes       []Cause
-		apps         []AppErrorStat
-		cErr, appErr error
+		data               *DashboardData
+		err                error
+		causes             []Cause
+		apps               []AppErrorStat
+		matrix             *FailureMatrix
+		cErr, appErr, mErr error
 	)
 	parallel(
 		func() { data, err = ch.FetchDashboardData(ctx, f) },
 		func() { causes, cErr = ch.FetchCauses(ctx, f, 5, false) },
 		func() { apps, appErr = ch.FetchAppStats(ctx, f, true, 300) },
+		func() { matrix, mErr = ch.FetchFailureMatrix(ctx, f) },
 	)
 	if err != nil {
 		return nil, err
@@ -174,8 +200,12 @@ func (ch *CHClient) FetchDashboardPage(ctx context.Context, f RunFilter) (*Dashb
 	if appErr != nil {
 		log.Printf("[CH] dashboard failing apps: %v", appErr)
 	}
+	if mErr != nil {
+		log.Printf("[CH] dashboard failure matrix: %v", mErr)
+	}
 	data.TopCauses = causes
 	data.FailingApps = rankFailureRates(apps, data.MinRuns, 8)
+	data.FailureMatrix = matrix
 	for _, c := range causes {
 		data.ErrorAnalysis = append(data.ErrorAnalysis, ErrorGroup{
 			Pattern: c.Message, Count: c.Failures, UniqueApps: c.Apps, Apps: strings.Join(c.TopApps, ", "),
@@ -475,22 +505,10 @@ func (ch *CHClient) FetchErrorAnalysisData(ctx context.Context, f RunFilter) (*E
 		days = 365
 	}
 	now := time.Now().UTC()
-	byDay := byLabel(b["day"])
-	for _, d := range buildDailyStats(byDay, days, now) {
+	for _, d := range buildDailyStats(byLabel(b["day"]), days, now) {
 		data.ErrorTimeline = append(data.ErrorTimeline, ErrorTimelinePoint{Date: d.Date, Failed: d.Failed, Aborted: d.Aborted})
 	}
-	if bucket == "hour" {
-		byHour := byLabel(b["hour"])
-		start := now.Truncate(24 * time.Hour)
-		for h := start; !h.After(now); h = h.Add(time.Hour) {
-			r := byHour[h.Format("2006-01-02 15:04:05")]
-			data.FailuresOverTime = append(data.FailuresOverTime, TimePoint{T: h.Format(time.RFC3339), Runs: r.Runs, Failed: r.Failed, Aborted: r.Aborted})
-		}
-	} else {
-		for _, d := range buildDailyStats(byDay, days, now) {
-			data.FailuresOverTime = append(data.FailuresOverTime, TimePoint{T: d.Date, Runs: d.Runs, Failed: d.Failed, Aborted: d.Aborted})
-		}
-	}
+	data.FailuresOverTime = runTimeline(b, bucket, days, now)
 
 	for _, c := range causes {
 		cmd := c.Key

@@ -9,8 +9,8 @@
     <script src="/static/js/svg-inliner.js" defer></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/css/dashboard.css?v=5">
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500..700&family=JetBrains+Mono:wght@400;500;700&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/dashboard.css?v=6">
 </head>
 <body>
     <nav class="navbar">
@@ -75,11 +75,17 @@
             </div>
         </div>
 
+        <div id="scopeRow" class="scope-row" hidden>
+            <span class="scope-label">Showing only</span>
+            <span id="scopeChips" class="scope-chips"></span>
+            <span class="scope-hint">Every figure, list and the log below follow this filter.</span>
+        </div>
+
         <div id="errorBanner" class="banner banner-error" role="alert" hidden></div>
 
         <section class="cards" id="cards" aria-label="Summary"></section>
 
-        <section class="section-card">
+        <section class="section-card" id="triageSection">
             <div class="section-header">
                 <div>
                     <h2>Error analysis</h2>
@@ -87,16 +93,36 @@
                 </div>
                 <a class="btn" id="errorsLink" href="/error-analysis">Open error analysis</a>
             </div>
-            <div class="split">
-                <div>
-                    <h3 class="sub">Top causes</h3>
-                    <div class="table-wrapper" id="topCauses"></div>
+            <div class="triage">
+                <div class="triage-side">
+                    <div class="triage-tabs" role="tablist" aria-label="Group failures by">
+                        <button type="button" role="tab" id="tabApps" data-tab="apps" aria-selected="true">Apps <span id="tabAppsCount" class="count"></span></button>
+                        <button type="button" role="tab" id="tabCauses" data-tab="causes" aria-selected="false">Causes <span id="tabCausesCount" class="count"></span></button>
+                    </div>
+                    <div class="triage-tools">
+                        <label class="field"><span class="sr-only">Filter the list</span>
+                            <input type="search" class="search-input" id="triageSearch" placeholder="Filter the list" autocomplete="off"></label>
+                        <label class="field"><span class="sr-only">Sort apps by</span>
+                            <select id="triageSort" class="custom-select">
+                                <option value="rate">By failure rate</option>
+                                <option value="failed">By failed runs</option>
+                            </select></label>
+                        <button type="button" class="btn" id="triageNow" data-now aria-pressed="false" title="Only apps whose last finished run failed">Failing now</button>
+                    </div>
+                    <div class="triage-list" id="triageList" role="listbox" aria-label="Apps and causes with failed runs"></div>
                 </div>
+                <div class="triage-pane" id="triagePane"></div>
+            </div>
+        </section>
+
+        <section class="section-card">
+            <div class="section-header">
                 <div>
-                    <h3 class="sub">Highest failure rates</h3>
-                    <div class="table-wrapper" id="failingApps"></div>
+                    <h2>Failure matrix</h2>
+                    <p>The apps that fail most against what fails them. A full column is one problem hitting many apps, a full row is one app with many problems. Select a cell for its runs, or a heading to filter the page.</p>
                 </div>
             </div>
+            <div class="table-wrapper" id="matrix"></div>
         </section>
 
         <section class="section-card" id="logSection">
@@ -164,19 +190,24 @@
 
         <div class="context-row">
             <section class="section-card">
-                <div class="section-header"><div><h2>Top applications</h2><p>By runs, with the share of finished runs that failed.</p></div></div>
+                <div class="section-header"><div><h2>Top applications</h2><p>By runs, with the share of finished runs that failed. Select a failure rate for the failed runs.</p></div></div>
                 <div class="table-wrapper" id="topApps"></div>
             </section>
             <section class="section-card">
-                <div class="section-header"><div><h2>Breakdown</h2><p>Runs by platform, type and OS.</p></div></div>
+                <div class="section-header"><div><h2>Breakdown</h2><p>Runs by platform, type and OS. Select a failure rate for the runs behind it.</p></div></div>
                 <div id="breakdown" class="breakdown"></div>
             </section>
-            <section class="section-card" id="dailySection" hidden>
-                <div class="section-header"><div><h2>Runs per day</h2><p>Successful and failed runs, by the day they started.</p></div></div>
-                <div id="daily" class="chart-box"></div>
+            <section class="section-card" id="timelineSection" hidden>
+                <div class="section-header"><div><h2>Runs over time</h2><p id="timelineNote">By the day they started.</p></div></div>
+                <div id="timeline" class="chart-box"></div>
             </section>
         </div>
     </main>
+
+    <dialog id="drillDialog" class="record-dialog drill-dialog" aria-labelledby="drillTitle">
+        <button type="button" class="dialog-close" data-close-dialog aria-label="Close">&times;</button>
+        <div id="drillBody" tabindex="-1"></div>
+    </dialog>
 
     <dialog id="recordDialog" class="record-dialog" aria-labelledby="recordTitle">
         <button type="button" class="dialog-close" data-close-dialog aria-label="Close">&times;</button>
@@ -184,6 +215,6 @@
     </dialog>
 
     <script src="/static/js/runs.js?v=3"></script>
-    <script src="/static/js/dashboard.js?v=6"></script>
+    <script src="/static/js/dashboard.js?v=7"></script>
 </body>
 </html>
