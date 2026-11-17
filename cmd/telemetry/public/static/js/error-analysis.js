@@ -379,10 +379,7 @@
     const title = open.kind === 'cause' ? '[Telemetry] ' + (item.top_apps && item.top_apps.length === 1 ? item.top_apps[0] + ': ' : '') + item.message
       : open.kind === 'app' ? '[Telemetry] ' + item.app + ': ' + (item.top_cause_message || 'failures')
         : '[Telemetry] Exit code ' + item.exit_code + ': ' + (item.description || '');
-    $('issueTitle').value = title.slice(0, 200);
-    $('issueBody').value = drillMarkdown();
-    $('issueResult').textContent = '';
-    $('issueDialog').showModal();
+    R.openIssue(title, drillMarkdown());
   }
 
   let searchTimer = null;
@@ -443,21 +440,6 @@
         $('cleanupResult').textContent = 'Cleanup did not run: ' + err.message;
       } finally {
         $('cleanupRun').disabled = false;
-      }
-    });
-    $('issueForm').addEventListener('submit', async function (e) {
-      e.preventDefault();
-      $('issueSubmit').disabled = true;
-      try {
-        const res = await postJSON('/api/github/create-issue', {
-          password: $('issuePassword').value, title: $('issueTitle').value, body: $('issueBody').value,
-          labels: $('issueLabels').value.split(',').map(function (l) { return l.trim(); }).filter(Boolean),
-        });
-        $('issueResult').innerHTML = 'Issue created: <a href="' + esc(res.issue_url) + '" target="_blank" rel="noopener">' + esc(res.issue_url) + '</a>';
-      } catch (err) {
-        $('issueResult').textContent = 'The issue was not created: ' + err.message;
-      } finally {
-        $('issueSubmit').disabled = false;
       }
     });
   }

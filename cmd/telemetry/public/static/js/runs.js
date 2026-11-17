@@ -214,7 +214,8 @@
       }
       html += '<div class="rd-actions">' +
         (trace ? '<button type="button" class="btn" data-copy="trace">Copy trace</button>' : '') +
-        '<button type="button" class="btn" data-copy="markdown">Copy as Markdown</button></div>';
+        '<button type="button" class="btn" data-copy="markdown">Copy as Markdown</button>' +
+        (password && rec.status === 'failed' ? '<button type="button" class="btn" data-issue="run">Create issue</button>' : '') + '</div>';
       html += '</section>';
     }
 
@@ -380,6 +381,58 @@
     return pw ? { cache: 'no-store', headers: { Authorization: 'Bearer ' + pw } } : { cache: 'no-store' };
   }
   function onUnlock(fn) { unlockListeners.push(fn); }
+  function unlocked() { return !!password; }
+
+  // Fills the issue form. A trace password in the tab is sent along; without one the form asks for the admin password.
+  function openIssue(title, body) {
+    const el = function (id) { return document.getElementById(id); };
+    el('issueAuth').hidden = !!password;
+    el('issuePassword').required = !password;
+    el('issueTitle').value = String(title).slice(0, 200);
+    el('issueBody').value = String(body).slice(0, 60000);
+    el('issueResult').textContent = '';
+    const dlg = el('issueDialog');
+    if (dlg.showModal && !dlg.open) dlg.showModal();
+    else dlg.setAttribute('open', '');
+  }
+
+  async function submitIssue() {
+    const el = function (id) { return document.getElementById(id); };
+    const result = el('issueResult');
+    el('issueSubmit').disabled = true;
+    try {
+      const payload = {
+        title: el('issueTitle').value, body: el('issueBody').value,
+        labels: el('issueLabels').value.split(',').map(function (l) { return l.trim(); }).filter(Boolean),
+      };
+      if (!password) payload.password = el('issuePassword').value;
+      const opts = request(password);
+      opts.method = 'POST';
+      opts.headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers);
+      opts.body = JSON.stringify(payload);
+      const r = await fetch('/api/github/create-issue', opts);
+      const text = await r.text();
+      let res = {};
+      try { res = JSON.parse(text) || {}; } catch (e) { /* plain text answer */ }
+      const link = res.issue_url ? '<a href="' + esc(res.issue_url) + '" target="_blank" rel="noopener">' + esc(res.issue_url) + '</a>' : '';
+      if (r.ok) {
+        result.innerHTML = 'Issue created: ' + link;
+      } else if (r.status === 409 && link) {
+        result.innerHTML = 'An open issue with this title already exists: ' + link;
+      } else if (r.status === 403 && password) {
+        setPassword('');
+        el('issueAuth').hidden = false;
+        el('issuePassword').required = true;
+        result.textContent = 'The trace password is no longer accepted. Enter the admin password to create the issue.';
+      } else {
+        result.textContent = 'The issue was not created: ' + (res.error || text.trim() || 'the server answered ' + r.status);
+      }
+    } catch (e) {
+      result.textContent = 'The issue was not created: ' + e.message;
+    } finally {
+      el('issueSubmit').disabled = false;
+    }
+  }
 
   async function getJSON(url) {
     let r = await fetch(url, request(password));
@@ -456,6 +509,10 @@
       copyText(text, copy);
       return;
     }
+    if (current && t.closest('[data-issue="run"]')) {
+      openIssue('[Telemetry] ' + (current.nsapp || 'unknown') + ': ' + headline(current), runMarkdown(current, 3));
+      return;
+    }
     if (t.closest('[data-close-dialog]')) {
       const d = t.closest('dialog');
       if (d) d.close();
@@ -465,7 +522,13 @@
   });
 
   document.addEventListener('submit', function (e) {
-    const form = e.target && e.target.closest ? e.target.closest('[data-unlock]') : null;
+    if (!e.target || !e.target.closest) return;
+    if (e.target.closest('#issueForm')) {
+      e.preventDefault();
+      submitIssue();
+      return;
+    }
+    const form = e.target.closest('[data-unlock]');
     if (!form) return;
     e.preventDefault();
     unlock(form);
@@ -499,7 +562,7 @@
     hostName: hostName, setupName: setupName, stageTimeline: stageTimeline, recordDialogHTML: recordDialogHTML,
     runMarkdown: runMarkdown, causeMarkdown: causeMarkdown, mdCell: mdCell, columnsSVG: columnsSVG, copyText: copyText,
     download: download, getJSON: getJSON, openRecord: openRecord, closeRecord: closeRecord, initChrome: initChrome,
-    unlockForm: unlockForm, onUnlock: onUnlock,
+    unlockForm: unlockForm, onUnlock: onUnlock, unlocked: unlocked, openIssue: openIssue,
     current: function () { return current; },
   };
 })();

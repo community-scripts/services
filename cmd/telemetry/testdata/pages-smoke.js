@@ -75,6 +75,7 @@ function page(template, scripts, search, session) {
   };
   const downloads = [];
   const clipboard = [];
+  const posts = [];
   const document = {
     documentElement: element('html'),
     body: { appendChild() {} },
@@ -112,6 +113,11 @@ function page(template, scripts, search, session) {
     fetch: async (url, opts) => {
       const auth = opts && opts.headers && opts.headers.Authorization;
       if (auth && auth !== 'Bearer ' + PASSWORD) return { ok: false, status: 403, text: async () => 'forbidden', json: async () => ({}) };
+      if (opts && opts.method === 'POST') {
+        posts.push({ url, auth, body: JSON.parse(opts.body) });
+        const res = { success: true, issue_url: 'https://github.com/o/r/issues/9' };
+        return { ok: true, status: 200, text: async () => JSON.stringify(res), json: async () => res };
+      }
       const body = api(url, auth ? tracedFixtures : fixtures);
       if (!body) return { ok: false, status: 404, text: async () => 'no fixture for ' + url, json: async () => ({}) };
       return { ok: true, status: 200, text: async () => JSON.stringify(body), json: async () => JSON.parse(JSON.stringify(body)) };
@@ -131,7 +137,7 @@ function page(template, scripts, search, session) {
   });
   // Ids the scripts render themselves are fine once some markup carries them.
   const unknown = () => [...missing].filter((id) => !Object.values(elements).some((e) => String(e.innerHTML).includes('id="' + id + '"')));
-  return { ctx, el: (id) => document.getElementById(id), missing: unknown, click, submit, target, downloads, blobs, clipboard };
+  return { ctx, el: (id) => document.getElementById(id), missing: unknown, click, submit, target, downloads, blobs, clipboard, posts };
 }
 
 const tick = () => new Promise((r) => setTimeout(r, 20));
@@ -279,6 +285,17 @@ async function errorPage() {
   p.click(p.target('[data-drun]', { 'data-drun': '0' }));
   expect(p.el('recordDialog').open && p.el('recordBody').innerHTML.includes('What went wrong'), 'a drill-down run does not open the record dialog');
 
+  // Without a trace password in the tab the issue form asks for the admin password and sends it.
+  p.click(p.target('[data-drill]', { 'data-drill': 'issue' }));
+  expect(p.el('issueDialog').open && p.el('issueAuth').hidden === false && p.el('issuePassword').required === true,
+    'the issue form does not ask for the admin password');
+  expect(p.el('issueTitle').value === '[Telemetry] immich: npm ERR! code ENOSPC' && p.el('issueBody').value.includes('## npm ERR! code ENOSPC'),
+    'the issue form is not filled from the open cause: ' + p.el('issueTitle').value);
+  p.el('issuePassword').value = 'adm1n';
+  p.submit(p.target('#issueForm', {}));
+  await tick();
+  expect(p.posts.length === 1 && p.posts[0].body.password === 'adm1n' && !p.posts[0].auth, 'the admin password is not sent with the issue');
+
   const out = await p.ctx.ErrorPage.exportView();
   expect(out && out.causes.length && out.causes[0].example_runs && out.causes[0].example_runs[0].error, 'the export lacks example runs with traces');
   expect(p.downloads.length === 1 && /^telemetry-errors-\d+d-/.test(p.downloads[0].name), 'the export did not download');
@@ -381,6 +398,7 @@ async function anonymous() {
     closest(sel) { return sel === '[data-unlock]' || sel === '#recordDialog' ? this : null; },
   });
   expect(dlg.includes('data-unlock') && dlg.includes('type="password"'), 'the anonymous record dialog has no password field');
+  expect(!dlg.includes('data-issue') && !anonPane.includes('data-issue'), 'an issue can be created without the password');
   d.submit(form('wrong'));
   await tick();
   expect(result.textContent.includes('not accepted') && !d.el('recordBody').innerHTML.includes('npm ERR!'), 'a wrong password is not refused');
@@ -389,6 +407,32 @@ async function anonymous() {
   expect(d.el('recordBody').innerHTML.includes('npm ERR! syscall write') && !d.el('recordBody').innerHTML.includes('data-unlock'),
     'the password does not show the trace in the open run dialog');
   expect(d.el('triageList').innerHTML.includes('npm ERR! code ENOSPC'), 'the page does not reload with messages after the password');
+
+  // With the password the run and the open app offer an issue, sent with the password instead of a second prompt.
+  expect(d.el('recordBody').innerHTML.includes('data-issue="run"') && d.el('triagePane').innerHTML.includes('data-issue="pane"'),
+    'the password does not offer to create an issue');
+  d.click(d.target('[data-issue="run"]', {}));
+  expect(d.el('issueDialog').open && d.el('issueAuth').hidden === true && d.el('issuePassword').required === false,
+    'the issue form asks for a second password');
+  expect(d.el('issueTitle').value === '[Telemetry] immich: npm ERR! code ENOSPC' && d.el('issueBody').value.includes('npm ERR! errno -28'),
+    'the issue form is not filled from the run: ' + d.el('issueTitle').value);
+  d.el('issueLabels').value = 'bug, telemetry';
+  d.submit(d.target('#issueForm', {}));
+  await tick();
+  const sent = d.posts[0] || { body: {} };
+  expect(sent.url === '/api/github/create-issue' && sent.auth === 'Bearer ' + PASSWORD && !('password' in sent.body) &&
+    sent.body.labels.join() === 'bug,telemetry' && sent.body.title === '[Telemetry] immich: npm ERR! code ENOSPC',
+  'the issue is not sent with the trace password: ' + JSON.stringify(sent).slice(0, 200));
+  expect(d.el('issueResult').innerHTML.includes('https://github.com/o/r/issues/9'), 'the created issue is not linked');
+  d.click(d.target('[data-issue="pane"]', {}));
+  expect(d.el('issueTitle').value === '[Telemetry] npm ERR! code ENOSPC' && d.el('issueBody').value.includes('Distinct setups: 3'),
+    'the issue form is not filled from the open cause: ' + d.el('issueTitle').value);
+  d.click(d.target('[data-pick]', { 'data-pick': 'app', 'data-id': 'immich' }));
+  await tick();
+  d.click(d.target('[data-issue="pane"]', {}));
+  expect(d.el('issueTitle').value === '[Telemetry] immich: npm ERR! code ENOSPC' && d.el('issueBody').value.includes('### Causes') &&
+    d.el('issueBody').value.includes('Failing now: yes') && d.el('issueBody').value.includes('| npm ERR! code ENOSPC | 3 |'),
+  'the issue form is not filled from the open app: ' + d.el('issueTitle').value);
 
   // A stored password the server no longer accepts is dropped instead of failing every request.
   const session = { tracePassword: 'rotated' };

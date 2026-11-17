@@ -2158,93 +2158,7 @@ func main() {
 	mux.HandleFunc("/api/admin/migrate-script", migrateScriptHandler(cfg.AdminToken, ch, cache.InvalidateDashboard))
 
 	// GitHub Issue creation API
-	mux.HandleFunc("/api/github/create-issue", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			json.NewEncoder(w).Encode(map[string]string{"error": "method not allowed"})
-			return
-		}
-
-		// Require admin password
-		if cfg.AdminPassword == "" {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusServiceUnavailable)
-			json.NewEncoder(w).Encode(map[string]string{"error": "admin password not configured"})
-			return
-		}
-
-		var body struct {
-			Password    string   `json:"password"`
-			Title       string   `json:"title"`
-			Body        string   `json:"body"`
-			Labels      []string `json:"labels"`
-			AppName     string   `json:"app_name"`
-			ExitCode    int      `json:"exit_code"`
-			ErrorText   string   `json:"error_text"`
-			FailureRate float64  `json:"failure_rate"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]string{"error": "invalid request body"})
-			return
-		}
-
-		if body.Password != cfg.AdminPassword {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			json.NewEncoder(w).Encode(map[string]string{"error": "incorrect password"})
-			return
-		}
-
-		if cfg.GitHubToken == "" {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusServiceUnavailable)
-			json.NewEncoder(w).Encode(map[string]string{"error": "GitHub token not configured on server"})
-			return
-		}
-
-		// Build issue body if not provided
-		if body.Body == "" {
-			body.Body = fmt.Sprintf("## Telemetry Error Report\n\n"+
-				"**Application:** %s\n"+
-				"**Exit Code:** %d\n"+
-				"**Error Category:** %s\n"+
-				"**Failure Rate:** %.1f%%\n\n"+
-				"### Error Details\n```\n%s\n```\n\n"+
-				"---\n*This issue was automatically created from the telemetry error analysis dashboard.*",
-				body.AppName, body.ExitCode,
-				categorizeExitCode(body.ExitCode),
-				body.FailureRate, body.ErrorText)
-		}
-
-		if body.Title == "" {
-			body.Title = fmt.Sprintf("[Telemetry] %s: %s (exit code %d)",
-				body.AppName, categorizeExitCode(body.ExitCode), body.ExitCode)
-		}
-
-		// Default labels
-		if len(body.Labels) == 0 {
-			body.Labels = []string{"bug", "telemetry"}
-		}
-
-		// Create GitHub issue via API
-		issueURL, err := createGitHubIssue(cfg.GitHubToken, cfg.GitHubOwner, cfg.GitHubRepo, body.Title, body.Body, body.Labels)
-		if err != nil {
-			log.Printf("ERROR: failed to create GitHub issue: %v", err)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]string{"error": "failed to create issue: " + err.Error()})
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"success":   true,
-			"issue_url": issueURL,
-		})
-	})
+	mux.HandleFunc("/api/github/create-issue", issueHandler(cfg, traces, newIssueLimiter(10)))
 
 	mux.HandleFunc("/telemetry", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -2503,7 +2417,7 @@ func createGitHubIssue(token, owner, repo, title, body string, labels []string) 
 	b, _ := json.Marshal(payload)
 
 	req, err := http.NewRequest(http.MethodPost,
-		fmt.Sprintf("https://api.github.com/repos/%s/%s/issues", owner, repo),
+		fmt.Sprintf("%s/repos/%s/%s/issues", githubAPI, owner, repo),
 		bytes.NewReader(b),
 	)
 	if err != nil {

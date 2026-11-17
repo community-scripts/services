@@ -11,7 +11,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500..700&family=JetBrains+Mono:wght@400;500;700&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/css/dashboard.css?v=7">
-    <link rel="stylesheet" href="/static/css/error-analysis.css?v=4">
+    <link rel="stylesheet" href="/static/css/error-analysis.css?v=5">
 </head>
 <body>
     <nav class="navbar">
@@ -192,9 +192,12 @@
     <dialog id="issueDialog" class="form-dialog" aria-labelledby="issueTitleHead">
         <button type="button" class="dialog-close" data-close-dialog aria-label="Close">&times;</button>
         <h2 id="issueTitleHead">Create a GitHub issue</h2>
+        <p class="muted">The issue is public. Remove anything from the text that should not be published.</p>
         <form id="issueForm" method="dialog">
-            <label class="form-label" for="issuePassword">Admin password</label>
-            <input type="password" id="issuePassword" class="search-input" autocomplete="current-password" required>
+            <div id="issueAuth" class="form-auth">
+                <label class="form-label" for="issuePassword">Admin password</label>
+                <input type="password" id="issuePassword" class="search-input" autocomplete="current-password" required>
+            </div>
             <label class="form-label" for="issueTitle">Title</label>
             <input type="text" id="issueTitle" class="search-input">
             <label class="form-label" for="issueBody">Body</label>

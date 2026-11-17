@@ -400,7 +400,8 @@
       let html = '<header class="pane-head"><div class="rd-title"><h3>' + esc(pane.id) + '</h3>' + (a ? R.typeBadge(a.type) + nowChip(a) : '') + '</div><div class="rd-actions">' +
         '<button type="button" class="btn" data-scope-app="' + esc(pane.id) + '">' + (scoped ? 'Show all apps again' : 'Filter the page to this app') + '</button>' +
         '<a class="btn" href="/script-analysis?app=' + encodeURIComponent(pane.id) + '">Script analysis</a>' +
-        '<a class="btn" href="' + esc(errorsURL({ app: pane.id })) + '">Error analysis</a></div></header>';
+        '<a class="btn" href="' + esc(errorsURL({ app: pane.id })) + '">Error analysis</a>' +
+        (a && R.unlocked() ? '<button type="button" class="btn" data-issue="pane">Create issue</button>' : '') + '</div></header>';
       if (a) {
         const finished = a.success + a.failed;
         html += '<dl class="fv-stats">' + stat('Finished', R.num(finished)) + stat('Failed', R.num(a.failed), 'bad') +
@@ -421,7 +422,8 @@
     let html = '<header class="pane-head"><div class="rd-title"><h3 class="pane-cause' + (c && c.kind === 'command' ? ' is-code' : '') + '">' + esc(c ? c.message : causeMessage(pane.id)) + '</h3></div><div class="rd-actions">' +
       '<button type="button" class="btn" data-scope-cause="' + esc(pane.id) + '">' + (scoped ? 'Show all causes again' : 'Filter the page to this cause') + '</button>' +
       '<a class="btn" href="' + esc(errorsURL({ cause: pane.id })) + '">Error analysis</a>' +
-      (c ? '<button type="button" class="btn" data-pcausemd="1">Copy as Markdown</button>' : '') + '</div></header>';
+      (c ? '<button type="button" class="btn" data-pcausemd="1">Copy as Markdown</button>' : '') +
+      (c && R.unlocked() ? '<button type="button" class="btn" data-issue="pane">Create issue</button>' : '') + '</div></header>';
     if (c) {
       html += '<p class="pane-meta">' + (c.category ? '<span class="cat">' + esc(c.category) + '</span>' : '') + exitChip(c.exit_code) + ' ' + esc(c.exit_description || '') +
         (c.example_message ? '<span class="muted">Example: ' + esc(c.example_message) + '</span>' : '') + '</p>' +
@@ -429,6 +431,35 @@
         stat('Last 24 h', R.trend(c)) + '</dl><p class="fv-text">First seen ' + seen(c.first_seen) + ', last seen ' + seen(c.last_seen) + '.</p>';
     }
     return html;
+  }
+
+  function paneCauseMarkdown(c) {
+    return R.causeMarkdown(c, pane.runs.slice(0, 3), {
+      runsURL: location.origin + '/api/records?' + filterQuery().toString() + '&status=failed&cause=' + encodeURIComponent(c.key),
+    });
+  }
+
+  // The open app as an issue text: its figures, what fails it and the newest failed runs.
+  function paneAppMarkdown(a) {
+    const counts = {};
+    const order = [];
+    pane.runs.forEach(function (r) {
+      const k = runCause(r);
+      if (!counts[k]) { counts[k] = 0; order.push(k); }
+      counts[k]++;
+    });
+    order.sort(function (x, y) { return counts[y] - counts[x]; });
+    let md = '## ' + a.app + ' (' + R.typeName(a.type) + ')\n\n' + [
+      'Period: ' + (state.days === '1' ? 'today' : 'the last ' + state.days + ' days'),
+      'Failed: ' + R.num(a.failed) + ' of ' + R.num(a.success + a.failed) + ' finished runs (' + R.pct(a.failure_rate) + ')',
+      'Failing now: ' + (a.failing_now ? 'yes' : 'no'),
+      'Distinct setups among the failures: ' + R.num(a.setups_failed),
+      'Last failure: ' + (a.last_failure || 'none') + ', last success: ' + (a.last_success || 'none'),
+    ].map(function (l) { return '- ' + l; }).join('\n') + '\n\n### Causes' +
+      (pane.total > pane.runs.length ? ' among the newest ' + pane.runs.length + ' failed runs' : '') + '\n\n| Cause | Failed runs |\n| --- | --- |\n';
+    order.forEach(function (k) { md += '| ' + R.mdCell(k) + ' | ' + counts[k] + ' |\n'; });
+    pane.runs.slice(0, 3).forEach(function (r) { md += '\n' + R.runMarkdown(r, 3); });
+    return md;
   }
 
   function renderPane() {
@@ -828,7 +859,17 @@
       if (drill && viewClick(t, drill, 'd', renderDrill)) return;
       if (t.closest('[data-pcausemd]') && pane) {
         const c = triage.causes.filter(function (x) { return x.key === pane.id; })[0];
-        if (c) R.copyText(R.causeMarkdown(c, pane.runs.slice(0, 3), { runsURL: location.origin + '/api/records?' + filterQuery().toString() + '&status=failed&cause=' + encodeURIComponent(c.key) }), t.closest('[data-pcausemd]'));
+        if (c) R.copyText(paneCauseMarkdown(c), t.closest('[data-pcausemd]'));
+        return;
+      }
+      if (t.closest('[data-issue="pane"]') && pane) {
+        if (pane.kind === 'cause') {
+          const c = triage.causes.filter(function (x) { return x.key === pane.id; })[0];
+          if (c) R.openIssue('[Telemetry] ' + c.message, paneCauseMarkdown(c));
+        } else {
+          const a = triage.apps.filter(function (x) { return x.app === pane.id; })[0];
+          if (a) R.openIssue('[Telemetry] ' + a.app + ': ' + (a.top_cause_message || 'failed runs'), paneAppMarkdown(a));
+        }
         return;
       }
 

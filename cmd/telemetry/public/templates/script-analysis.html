@@ -136,6 +136,26 @@
         <div id="recordBody"></div>
     </dialog>
 
+    <dialog id="issueDialog" class="form-dialog" aria-labelledby="issueTitleHead">
+        <button type="button" class="dialog-close" data-close-dialog aria-label="Close">&times;</button>
+        <h2 id="issueTitleHead">Create a GitHub issue</h2>
+        <p class="muted">The issue is public. Remove anything from the text that should not be published.</p>
+        <form id="issueForm" method="dialog">
+            <div id="issueAuth" class="form-auth">
+                <label class="form-label" for="issuePassword">Admin password</label>
+                <input type="password" id="issuePassword" class="search-input" autocomplete="current-password" required>
+            </div>
+            <label class="form-label" for="issueTitle">Title</label>
+            <input type="text" id="issueTitle" class="search-input">
+            <label class="form-label" for="issueBody">Body</label>
+            <textarea id="issueBody" class="search-input" rows="10"></textarea>
+            <label class="form-label" for="issueLabels">Labels, comma separated</label>
+            <input type="text" id="issueLabels" class="search-input" value="bug, telemetry">
+            <p id="issueResult" class="form-result" role="status"></p>
+            <div class="rd-actions"><button type="button" class="btn" data-close-dialog>Cancel</button><button type="submit" class="btn btn-primary" id="issueSubmit">Create issue</button></div>
+        </form>
+    </dialog>
+
     <script src="/static/js/runs.js?v=4"></script>
     <script src="/static/js/script-analysis.js?v=7"></script>
 </body>
