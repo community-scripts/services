@@ -42,6 +42,7 @@ type Config struct {
 	MaxBodyBytes     int64
 	RateLimitRPM     int           // requests per minute per key
 	RateBurst        int           // burst tokens
+	ReadRateLimitRPM int           // read API requests per minute per client IP
 	RateKeyMode      string        // "ip" or "header"
 	RateKeyHeader    string        // e.g. "X-Telemetry-Key"
 	RequestTimeout   time.Duration // upstream timeout
@@ -1257,6 +1258,63 @@ func sanitizeIPs(s string) string {
 	return ipv4Re.ReplaceAllString(s, "${1}.x.x.x")
 }
 
+var (
+	urlCredsRe  = regexp.MustCompile(`([A-Za-z][A-Za-z0-9+.-]*://)[^\s/:@]*:[^\s/@]+@`)
+	sqlSecretRe = regexp.MustCompile(`(?i)\b(PASSWORD|IDENTIFIED(?:\s+WITH\s+\w+)?\s+BY)(\s+)(?:'[^']*'|"[^"]*")`)
+	// A colon needs a space or a quoted key after it, so dpkg's "libsecret-1-0:amd64" stays.
+	secretKVRe = regexp.MustCompile(`(?i)([\w.-]*?(?:pass(?:wd|word)?|token|secret|api[_-]?key|authorization)(?:[_.-][\w.-]*)?` +
+		`(?:["']?[ \t]*=[ \t]*|["']?[ \t]*:[ \t]+|["'][ \t]*:))("[^"]*"|'[^']*'|(?:bearer|basic|token)[ \t]+[^\s'"]+|[^\s'",;&]+)`)
+	emailRe = regexp.MustCompile(`[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}`)
+	ipv6Re  = regexp.MustCompile(`\b[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{0,4}){2,7}`)
+	macRe   = regexp.MustCompile(`\b[0-9A-Fa-f]{2}[:-][0-9A-Fa-f]{2}[:-][0-9A-Fa-f]{2}(?:[:-][0-9A-Fa-f]{2}){3}\b`)
+
+	systemdUnitSuffix = map[string]bool{"service": true, "socket": true, "timer": true, "target": true, "mount": true,
+		"automount": true, "path": true, "slice": true, "scope": true, "device": true, "swap": true}
+)
+
+// redactSecrets masks credentials, e-mail, IPv6 and MAC addresses in log text, best effort.
+func redactSecrets(s string) string {
+	if s == "" {
+		return s
+	}
+	s = urlCredsRe.ReplaceAllString(s, "${1}***@")
+	s = sqlSecretRe.ReplaceAllString(s, "${1}${2}'***'")
+	s = secretKVRe.ReplaceAllStringFunc(s, func(m string) string {
+		sub := secretKVRe.FindStringSubmatch(m)
+		val := sub[2]
+		switch {
+		case val[0] == '"' || val[0] == '\'':
+			val = val[:1] + "***" + val[:1]
+		case strings.ContainsAny(val, " \t"):
+			val = val[:strings.IndexAny(val, " \t")+1] + "***"
+		default:
+			val = "***"
+		}
+		return sub[1] + val
+	})
+	s = emailRe.ReplaceAllStringFunc(s, func(m string) string {
+		if strings.HasPrefix(m, "git@") || systemdUnitSuffix[strings.ToLower(m[strings.LastIndexByte(m, '.')+1:])] {
+			return m
+		}
+		return "***@***"
+	})
+	s = ipv6Re.ReplaceAllStringFunc(s, func(m string) string {
+		addr, rest := m, ""
+		if strings.HasSuffix(addr, ":") && !strings.HasSuffix(addr, "::") {
+			addr, rest = addr[:len(addr)-1], ":"
+		}
+		groups := strings.FieldsFunc(addr, func(r rune) bool { return r == ':' })
+		if net.ParseIP(addr) == nil || len(groups) < 3 {
+			return m
+		}
+		return groups[0] + ":x:x:x:x:x:x:x" + rest
+	})
+	return macRe.ReplaceAllStringFunc(s, func(m string) string {
+		sep := m[2:3]
+		return m[:8] + sep + "xx" + sep + "xx" + sep + "xx"
+	})
+}
+
 func validate(in *TelemetryIn) error {
 	// Sanitize all string fields
 	in.RandomID = sanitizeShort(in.RandomID, 64)
@@ -1289,13 +1347,13 @@ func validate(in *TelemetryIn) error {
 	in.KernelVersion = sanitizeShort(in.KernelVersion, 64)
 	in.AppVersion = sanitizeShort(in.AppVersion, 64)
 	// Long enough for a real command, short enough to group on.
-	in.FailedCommand = sanitizeShort(sanitizeIPs(in.FailedCommand), 512)
+	in.FailedCommand = sanitizeShort(redactSecrets(sanitizeIPs(in.FailedCommand)), 512)
 	if in.FailedLine < 0 || in.FailedLine > 1_000_000 {
 		in.FailedLine = 0
 	}
 
-	in.ErrorMessage = sanitizeShort(sanitizeIPs(in.ErrorMessage), 300)
-	in.ErrorStep = sanitizeShort(sanitizeIPs(in.ErrorStep), 120)
+	in.ErrorMessage = sanitizeShort(redactSecrets(sanitizeIPs(in.ErrorMessage)), 300)
+	in.ErrorStep = sanitizeShort(redactSecrets(sanitizeIPs(in.ErrorStep)), 120)
 	in.FailedFunction = sanitizeShort(in.FailedFunction, 64)
 	in.ErrorPhase = strings.ToLower(sanitizeShort(in.ErrorPhase, 16))
 	if in.ErrorPhase != "" && in.ErrorPhase != "host" && in.ErrorPhase != "container" {
@@ -1350,7 +1408,7 @@ func validate(in *TelemetryIn) error {
 	}
 
 	// Allow longer error text to capture full installation log + anonymize IPs (GDPR)
-	in.Error = sanitizeMultiLine(sanitizeIPs(in.Error), 131072)
+	in.Error = sanitizeMultiLine(redactSecrets(sanitizeIPs(in.Error)), 131072)
 
 	// Required fields for all requests
 	if in.RandomID == "" || in.Type == "" || in.NSAPP == "" || in.Status == "" {
@@ -1509,6 +1567,7 @@ func main() {
 		MaxBodyBytes:     envInt64("MAX_BODY_BYTES", 262144),
 		RateLimitRPM:     envInt("RATE_LIMIT_RPM", 300),
 		RateBurst:        envInt("RATE_BURST", 60),
+		ReadRateLimitRPM: envInt("READ_RATE_LIMIT_RPM", 300),
 		RateKeyMode:      env("RATE_KEY_MODE", "ip"), // "ip" or "header"
 		RateKeyHeader:    env("RATE_KEY_HEADER", "X-Telemetry-Key"),
 		RequestTimeout:   time.Duration(envInt("UPSTREAM_TIMEOUT_MS", 60000)) * time.Millisecond,
@@ -1579,6 +1638,8 @@ func main() {
 	writeQueue.Start()
 
 	rl := NewRateLimiter(cfg.RateLimitRPM, cfg.RateBurst)
+	readRL := NewRateLimiter(cfg.ReadRateLimitRPM, cfg.ReadRateLimitRPM)
+	traces := func(r *http.Request) bool { return validAdminToken(r.Header.Get("Authorization"), cfg.AdminToken) }
 
 	// Initialize cache
 	cache := NewCache(CacheConfig{
@@ -1586,6 +1647,8 @@ func main() {
 		EnableRedis: cfg.EnableRedis,
 		DefaultTTL:  cfg.CacheTTL,
 	})
+	// Redis outlives the process, so it can hold answers built by a build with other access rules.
+	cache.InvalidateDashboard(context.Background())
 
 	// Initialize alerter
 	alerter := NewAlerter(AlertConfig{
@@ -1692,6 +1755,7 @@ func main() {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		f.Traces = traces(r)
 		serveCachedJSON(w, r, cache, cfg.CacheEnabled, f.cacheKey("dashboard"), dashboardTTL(f.Days), 120*time.Second,
 			func(ctx context.Context) (*DashboardData, error) { return ch.FetchDashboardPage(ctx, f) })
 	})
@@ -1703,6 +1767,7 @@ func main() {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		f.Traces = traces(r)
 		page := parseLimit(q.Get("page"), 1, 1_000_000)
 		limit := parseLimit(q.Get("limit"), 50, 100)
 
@@ -1774,7 +1839,7 @@ func main() {
 
 		repoSource, repoSlug := parseRepoFilters(r)
 		platform := parsePlatform(r)
-		f := RunFilter{Days: days, RepoSource: repoSource, RepoSlug: repoSlug, Platform: platform}
+		f := RunFilter{Days: days, RepoSource: repoSource, RepoSlug: repoSlug, Platform: platform, Traces: traces(r)}
 
 		ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 		defer cancel()
@@ -1785,6 +1850,9 @@ func main() {
 		}
 		if repoSlug != "" {
 			cacheKey += ":s=" + repoSlug
+		}
+		if f.Traces {
+			cacheKey += ":traces"
 		}
 		var data *ScriptAnalysisData
 		if cfg.CacheEnabled && cache.Get(ctx, cacheKey, &data) {
@@ -1850,6 +1918,7 @@ func main() {
 			http.Error(w, "missing app parameter", http.StatusBadRequest)
 			return
 		}
+		f.Traces = traces(r)
 		serveCachedJSON(w, r, cache, cfg.CacheEnabled, f.cacheKey("scriptdetail"), dashboardTTL(f.Days), errorsTimeout(f.Days),
 			func(ctx context.Context) (*ScriptDetailData, error) { return ch.FetchScriptDetail(ctx, f) })
 	})
@@ -1860,6 +1929,7 @@ func main() {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		f.Traces = traces(r)
 		serveCachedJSON(w, r, cache, cfg.CacheEnabled, f.cacheKey("errors"), errorsTTL(f.Days), errorsTimeout(f.Days),
 			func(ctx context.Context) (*ErrorAnalysisData, error) { return ch.FetchErrorAnalysisData(ctx, f) })
 	})
@@ -1871,6 +1941,7 @@ func main() {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		f.Traces = traces(r)
 		limit := parseLimit(q.Get("limit"), 50, 200)
 		full := q.Get("examples") == "full"
 		key := fmt.Sprintf("%s&limit=%d&full=%t", f.cacheKey("causes"), limit, full)
@@ -1891,6 +1962,7 @@ func main() {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		f.Traces = traces(r)
 		limit := parseLimit(q.Get("limit"), 100, 500)
 		key := fmt.Sprintf("%s&limit=%d", f.cacheKey("apperrors"), limit)
 		serveCachedJSON(w, r, cache, cfg.CacheEnabled, key, errorsTTL(f.Days), errorsTimeout(f.Days),
@@ -2300,7 +2372,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           securityHeaders(mux),
+		Handler:           securityHeaders(readGuard(mux, readRL, pt, cfg.AdminToken)),
 		ReadHeaderTimeout: 3 * time.Second,
 	}
 
@@ -2369,6 +2441,35 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
+		next.ServeHTTP(w, r)
+	})
+}
+
+// readGuard rate-limits the API per client IP; a valid admin token is exempt, any other Authorization is refused.
+func readGuard(next http.Handler, rl *RateLimiter, pt *ProxyTrust, adminToken string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/metrics" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		w.Header().Add("Vary", "Authorization")
+		auth := r.Header.Get("Authorization")
+		if validAdminToken(auth, adminToken) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		key := "unknown"
+		if ip := getClientIP(r, pt); ip != nil {
+			key = ip.String()
+		}
+		if !rl.Allow(key) {
+			http.Error(w, "rate limited", http.StatusTooManyRequests)
+			return
+		}
+		if auth != "" {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 		next.ServeHTTP(w, r)
 	})
 }

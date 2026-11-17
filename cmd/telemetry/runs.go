@@ -35,7 +35,16 @@ func abortRowSQL() string {
 const rowCommandSQL = `if(failed_command != '', failed_command, extract(error, 'at line [0-9]+: ([^\n|]{1,200})'))`
 
 // Aliases must never equal a column name, or ClickHouse nests the aggregates.
-func runColumns(full bool) []string {
+// Without traces a cause is its exit code, so no client text becomes a group key.
+func runColumns(full, traces bool) []string {
+	causeKind := "multiIf(r_msg != '', 'message', r_cmd_ok, 'command', 'exit_code') AS r_cause_kind"
+	cause := "multiIf(r_msg != '', r_msg, r_cmd_ok, r_cmd, concat('exit ', toString(r_exit))) AS r_cause"
+	trace := "argMaxIf(error, created, status IN ('failed','aborted','unknown')) AS r_error"
+	if !traces {
+		causeKind = "'exit_code' AS r_cause_kind"
+		cause = "concat('exit ', toString(r_exit)) AS r_cause"
+		trace = "'' AS r_error"
+	}
 	cols := []string{
 		runKeyExpr + " AS run_id",
 		"any(execution_id) AS r_eid",
@@ -88,18 +97,18 @@ func runColumns(full bool) []string {
 			"r_unknown_n > 0, 'unknown', 'in_progress') AS r_outcome",
 		"if(r_real_n > 0, r_term_at, r_last_seen) AS r_end",
 		"r_cmd != '' AND r_cmd != 'unknown' AND r_cmd != 'return' AND NOT startsWith(r_cmd, 'return ') AS r_cmd_ok",
-		"multiIf(r_msg != '', 'message', r_cmd_ok, 'command', 'exit_code') AS r_cause_kind",
-		"multiIf(r_msg != '', r_msg, r_cmd_ok, r_cmd, concat('exit ', toString(r_exit))) AS r_cause",
+		causeKind,
+		cause,
 		"cityHash64(r_cpu_model, r_gpu_model, r_ram_speed, r_pve, r_kernel) AS r_setup",
 	}
 	if full {
-		cols = append(cols, "argMaxIf(error, created, status IN ('failed','aborted','unknown')) AS r_error")
+		cols = append(cols, trace)
 	}
 	return cols
 }
 
-func runsSubquery(rowWhere string, full bool) string {
-	return "SELECT " + strings.Join(runColumns(full), ",\n\t") +
+func runsSubquery(rowWhere string, full, traces bool) string {
+	return "SELECT " + strings.Join(runColumns(full, traces), ",\n\t") +
 		"\nFROM telemetry_db.telemetry\nWHERE " + rowWhere + "\nGROUP BY run_id"
 }
 
@@ -140,6 +149,9 @@ type RunFilter struct {
 	Cause       string
 	ExecutionID string
 	RandomID    string
+
+	// Traces lets the answer carry text from the client's log; only the admin token sets it.
+	Traces bool
 
 	// Fixed windows that ignore Days, for "right now" figures.
 	rowsFrom    time.Time
@@ -219,7 +231,7 @@ func (f RunFilter) runWhere() (string, []interface{}) {
 	if f.Category != "" {
 		add("r_cat = ?", f.Category)
 	}
-	if f.Message != "" {
+	if f.Message != "" && f.Traces {
 		add("r_msg = ?", f.Message)
 	}
 	if f.Cause != "" {
@@ -251,7 +263,7 @@ func (f RunFilter) sql(q runQuery) (string, []interface{}) {
 	if q.where != "" {
 		ow += " AND " + q.where
 	}
-	text := "SELECT " + q.sel + "\nFROM (" + runsSubquery(rw, q.full) + ")"
+	text := "SELECT " + q.sel + "\nFROM (" + runsSubquery(rw, q.full, f.Traces) + ")"
 	if q.join != "" {
 		text += "\n" + q.join
 	}
@@ -285,6 +297,9 @@ func (f RunFilter) cacheKey(prefix string) string {
 	set("cause", f.Cause)
 	set("execution_id", f.ExecutionID)
 	set("random_id", f.RandomID)
+	if f.Traces {
+		set("traces", "1")
+	}
 	return prefix + ":" + v.Encode()
 }
 
@@ -309,6 +324,13 @@ type RunRecord struct {
 	CauseKind       string     `json:"cause_kind,omitempty"`
 	ExitDescription string     `json:"exit_description,omitempty"`
 	Stages          []RunStage `json:"stages,omitempty"`
+	TracesWithheld  bool       `json:"traces_withheld,omitempty"`
+}
+
+// withholdTraces drops the fields that carry text from the client's log.
+func (r *RunRecord) withholdTraces() {
+	r.Error, r.FailedCommand, r.ErrorMessage, r.ErrorStep = "", "", "", ""
+	r.TracesWithheld = true
 }
 
 const runDetailCols = `run_id, r_eid, r_rid, r_app, r_type, r_method, r_os, r_osver, r_pve, r_platform,
@@ -508,7 +530,7 @@ func (ch *CHClient) FetchRuns(ctx context.Context, f RunFilter, page, limit int,
 		}
 		return []RunRecord{}, int(total), nil
 	}
-	recs, err := ch.fetchRunDetails(ctx, ids, time.UnixMilli(floor), true)
+	recs, err := ch.fetchRunDetails(ctx, ids, time.UnixMilli(floor), true, f.Traces)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -516,7 +538,7 @@ func (ch *CHClient) FetchRuns(ctx context.Context, f RunFilter, page, limit int,
 }
 
 // fetchRunDetails keeps the order of ids; floor is their earliest start.
-func (ch *CHClient) fetchRunDetails(ctx context.Context, ids []string, floor time.Time, stages bool) ([]RunRecord, error) {
+func (ch *CHClient) fetchRunDetails(ctx context.Context, ids []string, floor time.Time, stages, traces bool) ([]RunRecord, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
@@ -529,7 +551,7 @@ func (ch *CHClient) fetchRunDetails(ctx context.Context, ids []string, floor tim
 	} else {
 		floor = time.Time{}
 	}
-	q := "SELECT " + runDetailCols + "\nFROM (" + runsSubquery(rowWhere, true) + ")"
+	q := "SELECT " + runDetailCols + "\nFROM (" + runsSubquery(rowWhere, true, traces) + ")"
 	rows, err := ch.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("CH run details: %w", err)
@@ -542,7 +564,11 @@ func (ch *CHClient) fetchRunDetails(ctx context.Context, ids []string, floor tim
 		if err := rows.Scan(r.dest()...); err != nil {
 			return nil, fmt.Errorf("CH run details scan: %w", err)
 		}
-		byKey[r.key] = r.record(now)
+		rec := r.record(now)
+		if !traces {
+			rec.withholdTraces()
+		}
+		byKey[r.key] = rec
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("CH run details: %w", err)

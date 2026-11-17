@@ -201,7 +201,7 @@ func (ch *CHClient) FetchScriptStats(ctx context.Context, f RunFilter, knownScri
 	}
 	causeByID := map[string]string{}
 	if len(failIDs) > 0 {
-		recs, err := ch.fetchRunDetails(ctx, failIDs, f.rowFloor(), false)
+		recs, err := ch.fetchRunDetails(ctx, failIDs, f.rowFloor(), false, f.Traces)
 		if err != nil {
 			log.Printf("[CH] script stats last failures: %v", err)
 		}
@@ -524,7 +524,7 @@ func (ch *CHClient) FetchErrorAnalysisData(ctx context.Context, f RunFilter) (*E
 		}
 	}
 	traces := map[string]RunRecord{}
-	if recs, err := ch.fetchRunDetails(ctx, ids, f.rowFloor(), false); err == nil {
+	if recs, err := ch.fetchRunDetails(ctx, ids, f.rowFloor(), false, f.Traces); err == nil {
 		for _, r := range recs {
 			traces[runKeyOf(r)] = r
 		}

@@ -1,18 +1,20 @@
 // Renders the dashboard, the error page and the scripts page against API
-// fixtures and checks what they show. Run from cmd/telemetry: node testdata/pages-smoke.js <fixtures dir>
+// fixtures and checks what they show. Run from cmd/telemetry:
+// node testdata/pages-smoke.js <fixtures dir> [<fixtures dir without the admin token>]
 'use strict';
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
 const pub = path.join(__dirname, '..', 'public');
-const fixtures = process.argv[2];
+let fixtures = process.argv[2];
+const anonymousFixtures = process.argv[3];
 if (!fixtures) {
-  console.error('usage: node testdata/pages-smoke.js <fixtures dir>');
+  console.error('usage: node testdata/pages-smoke.js <fixtures dir> [<anonymous fixtures dir>]');
   process.exit(2);
 }
 const fixture = (n) => JSON.parse(fs.readFileSync(path.join(fixtures, n), 'utf8'));
-const allRecords = fixture('records.json').records;
+let allRecords = fixture('records.json').records;
 
 let failures = 0;
 const fail = (msg) => { console.error('  ' + msg); failures++; };
@@ -268,8 +270,43 @@ async function scriptsPage() {
   return new Set([...p.missing(), ...linked.missing()]);
 }
 
+async function anonymous() {
+  fixtures = anonymousFixtures;
+  allRecords = fixture('records.json').records;
+  const leaked = (html) => ['npm ERR!', '$STD', 'Building Immich', 'Unable to locate package'].filter((s) => html.includes(s));
+
+  const d = page('dashboard.html', ['runs.js', 'dashboard.js']);
+  d.ctx.Dashboard.state.limit = 100;
+  await d.ctx.Dashboard.init();
+  expect(d.el('topCauses').innerHTML.includes('Exit 239'), 'anonymous top causes lack the exit code');
+  const recs = d.ctx.Dashboard.records();
+  d.click(d.target('[data-run]', { 'data-run': String(recs.findIndex((r) => r.execution_id === 'immich-0')) }));
+  const dlg = d.el('recordBody').innerHTML;
+  expect(dlg.includes('What went wrong') && dlg.includes('Exit 239') && dlg.includes('maintainers only'),
+    'the anonymous record dialog does not say the trace is withheld');
+
+  const e = page('error-analysis.html', ['runs.js', 'error-analysis.js']);
+  await e.ctx.ErrorPage.init();
+  const idx = e.ctx.ErrorPage.data().causes.findIndex((c) => c.key === 'exit 239');
+  e.click(e.target('[data-open]', { 'data-open': 'cause', 'data-idx': String(idx) }));
+  await tick();
+  expect(e.el('drillBox').innerHTML.includes('3 runs'), 'the anonymous cause drill-down lacks its runs');
+
+  const s = page('script-analysis.html', ['runs.js', 'script-analysis.js']);
+  await s.ctx.ScriptsPage.init();
+  expect(s.el('scriptsBody').innerHTML.includes('Exit 239'), 'the anonymous immich row lacks its exit code');
+
+  for (const [name, html] of [['log', d.el('logBody').innerHTML], ['record dialog', dlg], ['causes', e.el('causesBody').innerHTML],
+    ['drill-down', e.el('drillBox').innerHTML], ['scripts table', s.el('scriptsBody').innerHTML]]) {
+    const l = leaked(html);
+    expect(!l.length, 'the anonymous ' + name + ' shows ' + l.join(', '));
+  }
+  return new Set([...d.missing(), ...e.missing(), ...s.missing()]);
+}
+
 (async () => {
   const missing = new Set([...(await dashboard()), ...(await errorPage()), ...(await scriptsPage())]);
+  if (anonymousFixtures) for (const id of await anonymous()) missing.add(id);
   for (const id of missing) fail('a script reads #' + id + ', which its template does not have');
   if (failures) {
     console.error('  ' + failures + ' problem(s)');
