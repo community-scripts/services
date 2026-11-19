@@ -501,6 +501,25 @@ dialog.drill-dialog > div:focus { outline: none; }
 .unlock .search-input { min-width: 0; width: 180px; }
 .unlock .form-result { color: var(--accent-red); }
 
+/* API notes and the API reference */
+.api-body { padding: 12px 16px 16px; max-width: 120ch; }
+.api-body > p { color: var(--text-secondary); font-size: 13px; margin-bottom: 10px; }
+.api-body > p:last-child { margin-bottom: 0; }
+.api-list { display: grid; gap: 10px; }
+.api-list dt code { font-size: 13px; color: var(--accent-cyan); background: none; padding: 0; }
+.api-list dd { color: var(--text-secondary); font-size: 13px; }
+.api-params { color: var(--text-secondary); font-size: 13px; margin-top: 10px; }
+.api-body code { font-size: 12px; background: var(--bg-tertiary); padding: 0 4px; border-radius: 4px; }
+.api-body pre {
+  margin: 0 0 10px; padding: 10px 12px; overflow-x: auto; border: 1px solid var(--border-color); border-radius: 8px;
+  background: var(--bg-primary); font-size: 12px; line-height: 1.6; color: var(--text-primary);
+}
+.api-body ol, .api-body ul { margin: 0 0 10px; padding-left: 20px; font-size: 13px; color: var(--text-secondary); }
+.api-body li { margin-bottom: 3px; }
+.api-body table td:first-child { white-space: nowrap; }
+.api-body table td { color: var(--text-secondary); }
+#apiLink { overflow-wrap: anywhere; }
+
 /* Form dialogs */
 dialog.form-dialog h2 { font-size: 18px; margin-bottom: 6px; padding-right: 40px; }
 dialog.form-dialog form { display: grid; gap: 6px; margin-top: 10px; }

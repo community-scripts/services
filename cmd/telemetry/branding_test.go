@@ -6,7 +6,7 @@ import (
 )
 
 func TestDashboardBranding(t *testing.T) {
-	for _, name := range []string{"dashboard.html", "error-analysis.html", "script-analysis.html"} {
+	for _, name := range []string{"dashboard.html", "error-analysis.html", "script-analysis.html", "api-docs.html"} {
 		t.Run(name, func(t *testing.T) {
 			data, err := publicFS.ReadFile("public/templates/" + name)
 			if err != nil {

@@ -7,7 +7,7 @@
   const PAGE = 50;
   const KEYS = ['days', 'repo', 'platform', 'slug', 'search', 'type', 'failing', 'sort', 'app'];
   const DEFAULTS = { days: '1', repo: 'all', sort: '-total' };
-  const PERIODS = [['1', 'Today'], ['7', '7 days'], ['30', '30 days'], ['90', '90 days'], ['365', '1 year']];
+  const PERIODS = [['1', 'Today'], ['3', '3 days'], ['7', '7 days'], ['30', '30 days'], ['90', '90 days']];
   const OUTCOMES = [['success', 'c-ok', 'successful'], ['failed', 'c-bad', 'failed'], ['aborted', 'c-abort', 'aborted'],
     ['no_result', 'c-silent', 'without result'], ['installing', 'c-running', 'running']];
 
@@ -36,7 +36,7 @@
     return q;
   }
   function periodName(days) {
-    return days === '1' ? 'today' : days === '365' ? 'in the last year' : 'in the last ' + days + ' days';
+    return days === '1' ? 'today' : 'in the last ' + days + ' days';
   }
 
   function syncControls() {

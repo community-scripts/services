@@ -1835,6 +1835,11 @@ func main() {
 		serveHTMLFile(w, r, "public/templates/script-analysis.html")
 	})
 
+	// API reference page
+	mux.HandleFunc("/apidocs", func(w http.ResponseWriter, r *http.Request) {
+		serveHTMLFile(w, r, "public/templates/api-docs.html")
+	})
+
 	// Script Analysis API
 	mux.HandleFunc("/api/scripts", func(w http.ResponseWriter, r *http.Request) {
 		days := 30
