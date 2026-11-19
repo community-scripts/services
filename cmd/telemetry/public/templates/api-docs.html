@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API - Proxmox VE Helper-Scripts</title>
+    <meta name="description" content="The JSON API behind the telemetry dashboards: endpoints, filters and access">
+    <link rel="icon" type="image/svg+xml" href="/static/img/logo.svg?v=cs-amber">
+    <script src="/static/js/svg-inliner.js" defer></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500..700&family=JetBrains+Mono:wght@400;500;700&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/dashboard.css?v=8">
+</head>
+<body>
+    <nav class="navbar">
+        <a href="https://community-scripts.github.io/ProxmoxVE/" class="navbar-brand" target="_blank" rel="noopener">
+            <img width="28" height="28" src="/static/img/logo.svg?v=cs-amber" alt="" data-brand-logo>
+            <span class="brand-name">Proxmox VE Helper-Scripts</span>
+        </a>
+        <div class="nav-links">
+            <a href="/" class="nav-link">Dashboard</a>
+            <a href="/error-analysis" class="nav-link">Errors</a>
+            <a href="/script-analysis" class="nav-link">Scripts</a>
+            <a href="/apidocs" class="nav-link active" aria-current="page">API</a>
+        </div>
+        <div class="navbar-actions">
+            <a href="https://github.com/community-scripts/ProxmoxVE" target="_blank" rel="noopener" class="github-stars" id="githubStars">
+                <img src="/static/img/star.svg" alt="">
+                <span id="starCount">-</span>
+            </a>
+            <a href="https://github.com/community-scripts/ProxmoxVE" target="_blank" rel="noopener" class="nav-icon" title="GitHub" aria-label="GitHub">
+                <img src="/static/img/github.svg" alt="">
+            </a>
+            <a href="https://discord.gg/2wvnMDgeFz" target="_blank" rel="noopener" class="nav-icon" title="Discord" aria-label="Discord">
+                <img src="/static/img/discord.svg" alt="">
+            </a>
+            <button type="button" class="theme-toggle nav-icon" id="themeToggle" title="Switch theme" aria-label="Switch theme">
+                <span id="themeIcon">🌙</span>
+            </button>
+        </div>
+    </nav>
+
+    <main class="main-content">
+        <div class="page-header">
+            <h1>API</h1>
+            <p>Everything the dashboards show comes from the JSON endpoints on this page. They answer <code>GET</code> requests at <code data-origin>https://telemetry.community-scripts.org</code> and need no account.</p>
+        </div>
+
+        <section class="section-card">
+            <div class="section-header"><div><h2>Access</h2><p>What is public, and what the trace password adds.</p></div></div>
+            <div class="api-body">
+                <ul>
+                    <li><strong>Without a header</strong> every endpoint answers, but leaves out the text a failed run reported: <code>error</code> (the trace), <code>error_message</code>, <code>error_step</code> and <code>failed_command</code>. Runs carry <code>traces_withheld: true</code>, and every cause is its exit code (<code>kind: "exit_code"</code>, <code>key: "exit 100"</code>).</li>
+                    <li><strong>With <code>Authorization: Bearer &lt;trace password&gt;</code></strong> those fields are filled, and causes are grouped by error message, or by the failing command for older reports. Maintainers hand out the password.</li>
+                    <li>Any other <code>Authorization</code> header answers <code>403</code>. Requests are limited per client address, 300 a minute unless the service is configured otherwise; past that the answer is <code>429</code>.</li>
+                    <li>Cause keys differ with and without the password, so do not mix answers from both.</li>
+                </ul>
+            </div>
+        </section>
+
+        <section class="section-card">
+            <div class="section-header"><div><h2>How runs are counted</h2><p>The same rules apply to every figure.</p></div></div>
+            <div class="api-body">
+                <ul>
+                    <li>A <strong>run</strong> is one script execution: all reports that share an <code>execution_id</code>. Its <code>status</code> is <code>success</code>, <code>failed</code>, <code>aborted</code> (cancelled or declined by the user), <code>unknown</code> (no result: it stopped reporting) or <code>in_progress</code>.</li>
+                    <li><code>failure_rate</code> is failed divided by success plus failed, in percent. Aborted runs, runs without a result and running runs are not part of it.</li>
+                    <li><code>setups</code> counts distinct combinations of CPU, GPU, RAM speed, host version and kernel, so one host that retries stays one setup.</li>
+                    <li><code>days=1</code> is today since 00:00 UTC; <code>days=7</code> is today and the six days before it. Timestamps are UTC.</li>
+                </ul>
+            </div>
+        </section>
+
+        <section class="section-card">
+            <div class="section-header"><div><h2>Filters</h2><p>Every endpoint below takes these unless it says otherwise. An unknown value answers <code>400</code> and names the accepted ones.</p></div></div>
+            <div class="table-wrapper api-body">
+                <table class="compact">
+                    <thead><tr><th scope="col">Parameter</th><th scope="col">Values</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>days</code></td><td>1 to 365. The default differs per endpoint and is listed with it.</td></tr>
+                        <tr><td><code>repo</code></td><td><code>ProxmoxVE</code>, <code>DevScripts</code>, <code>external</code> (any other repository) or <code>all</code> (default).</td></tr>
+                        <tr><td><code>slug</code></td><td>One repository as owner/repo, for example <code>community-scripts/ProxmoxVE</code>. <code>/api/repo-slugs</code> lists them.</td></tr>
+                        <tr><td><code>platform</code></td><td><code>pve</code>, <code>incus</code> or <code>all</code> (default).</td></tr>
+                        <tr><td><code>type</code></td><td><code>lxc</code>, <code>vm</code>, <code>turnkey</code>, <code>pve</code> and <code>tool</code> (host tools), <code>addon</code>, <code>all</code>, or <code>install</code> for everything except host tools and add-ons.</td></tr>
+                        <tr><td><code>app</code></td><td>The exact script name, for example <code>immich</code>.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="section-card">
+            <div class="section-header"><div><h2>Failures</h2><p>Default period 7 days, default type <code>install</code>.</p></div></div>
+            <div class="api-body">
+                <dl class="api-list">
+                    <div><dt><code>GET /api/errors</code></dt><dd>The whole error analysis in one answer: <code>summary</code> (runs per status, <code>failure_rate</code>, <code>apps_failing</code>), <code>causes</code> (up to 50), <code>apps</code> (apps with a failed run), <code>exit_code_stats</code>, <code>category_stats</code>, <code>failures_over_time</code> (by the hour for <code>days=1</code>, else by the day; <code>bucket</code> says which), <code>stuck</code> (runs of the last 24 hours without a result) and <code>min_runs</code> (the finished runs an app needs before the dashboard ranks its rate).</dd></div>
+                    <div><dt><code>GET /api/causes</code></dt><dd>Failed runs grouped by what went wrong. Each cause has <code>key</code>, <code>kind</code> (<code>message</code>, <code>command</code> or <code>exit_code</code>), <code>message</code>, <code>category</code>, <code>exit_code</code>, <code>exit_description</code>, <code>failures</code>, <code>apps</code>, <code>top_apps</code>, <code>setups</code>, <code>first_seen</code>, <code>last_seen</code>, <code>last_24h</code>, <code>prev_24h</code>, <code>trend</code> (<code>new</code>, <code>rising</code>, <code>steady</code>, <code>falling</code>, <code>stopped</code>, <code>quiet</code>) and <code>examples</code> (up to three run IDs). <code>examples=full</code> adds those runs as <code>example_runs</code>. <code>limit</code> defaults to 50 and goes up to 200.</dd></div>
+                    <div><dt><code>GET /api/app-errors</code></dt><dd>Apps with at least one failed run, most failures first: runs per status, <code>failure_rate</code>, <code>setups_failed</code>, <code>top_cause</code>, <code>top_cause_message</code>, <code>top_exit_code</code>, <code>last_failure</code>, <code>last_success</code> and <code>failing_now</code> (the last failure is newer than the last success). <code>limit</code> defaults to 100 and goes up to 500.</dd></div>
+                </dl>
+            </div>
+        </section>
+
+        <section class="section-card">
+            <div class="section-header"><div><h2>Single runs</h2><p>Default period 1 day, default type <code>all</code>.</p></div></div>
+            <div class="api-body">
+                <dl class="api-list">
+                    <div><dt><code>GET /api/records</code></dt><dd>One record per run, newest first, as <code>records</code> with <code>total</code>, <code>page</code> and <code>total_pages</code>. Further filters: <code>status</code> (a status from above, or the stage of a running run: <code>installing</code>, <code>validation</code>, <code>configuring</code>), <code>cause</code> (a cause <code>key</code>), <code>exit_code</code>, <code>category</code>, <code>os</code>, <code>search</code> (part of the app name), <code>execution_id</code>, <code>random_id</code> and, with the password, <code>message</code> (an exact error message). <code>page</code> starts at 1, <code>limit</code> defaults to 50 and goes up to 100, <code>sort</code> takes <code>created</code>, <code>nsapp</code>, <code>status</code>, <code>os_type</code>, <code>type</code>, <code>method</code>, <code>exit_code</code> or <code>duration</code>, with a leading <code>-</code> for descending.</dd></div>
+                </dl>
+                <p class="api-params">A record holds the app (<code>nsapp</code>, <code>type</code>, <code>app_version</code>, <code>repo_source</code>, <code>repo_slug</code>), the result (<code>status</code>, <code>exit_code</code>, <code>exit_description</code>, <code>error_category</code>, <code>cause</code>, <code>cause_kind</code>, <code>error_phase</code>, <code>failed_function</code>, <code>failed_line</code>), the timing (<code>started_at</code>, <code>finished_at</code>, <code>duration</code> in seconds, <code>last_stage</code>, <code>stages</code> with the seconds spent in each), the guest (<code>os_type</code>, <code>os_version</code>, <code>core_count</code>, <code>ram_size</code> in MB, <code>disk_size</code> in GB, <code>ct_type</code>, <code>method</code>) and the host (<code>platform</code>, <code>pve_version</code>, <code>kernel_version</code>, <code>arch</code>, <code>cpu_vendor</code>, <code>cpu_model</code>, <code>gpu_vendor</code>, <code>gpu_model</code>, <code>gpu_passthrough</code>, <code>ram_speed</code>). With the password it also holds <code>error</code>, <code>error_message</code>, <code>error_step</code> and <code>failed_command</code>.</p>
+            </div>
+        </section>
+
+        <section class="section-card">
+            <div class="section-header"><div><h2>Dashboard and scripts</h2><p>The figures behind the other two pages.</p></div></div>
+            <div class="api-body">
+                <dl class="api-list">
+                    <div><dt><code>GET /api/dashboard</code></dt><dd>Default period 1 day, default type <code>install</code>. <code>summary</code>, <code>total_all_time</code>, <code>apps</code> (the 15 with the most runs), <code>breakdown</code> (runs by <code>platform</code>, <code>type</code> and <code>os</code>), <code>top_causes</code>, <code>failing_apps</code> (the highest failure rates among apps with at least <code>min_runs</code> finished runs), <code>failure_matrix</code> (failed runs per app and cause) and <code>timeline</code> (runs, failed and aborted per <code>bucket</code>). Also takes <code>cause</code>.</dd></div>
+                    <div><dt><code>GET /api/scripts</code></dt><dd>Default period 30 days, every type. <code>top_scripts</code> holds one entry per script: <code>total</code>, runs per status, <code>failure_rate</code>, <code>setups_failed</code>, <code>failing_now</code>, <code>last_failure</code>, <code>last_failure_cause</code> and <code>last_success</code>. Takes <code>days</code>, <code>repo</code>, <code>slug</code> and <code>platform</code> only.</dd></div>
+                    <div><dt><code>GET /api/script-detail</code></dt><dd>Needs <code>app</code>. Default period 30 days, default type <code>all</code>. One script's runs per status, <code>daily</code> (by the hour for <code>days=1</code>), <code>causes</code> (up to 10), <code>exit_codes</code>, <code>breakdown</code> by <code>platform</code> and <code>os</code>, and <code>recent</code> (its newest 15 runs as records).</dd></div>
+                    <div><dt><code>GET /api/repo-slugs</code></dt><dd>The repositories that reported runs, with their counts. Takes <code>days</code> (default 30) and <code>repo</code>.</dd></div>
+                    <div><dt><code>GET /api/exit-codes</code></dt><dd>Every known exit code with its description. Takes no filters.</dd></div>
+                </dl>
+            </div>
+        </section>
+
+        <section class="section-card">
+            <div class="section-header"><div><h2>Examples</h2><p>Replace <code>$PASSWORD</code> with the trace password, or leave the header out.</p></div></div>
+            <div class="api-body">
+                <p>What failed in the last seven days, and how often:</p>
+                <pre>curl -s -H "Authorization: Bearer $PASSWORD" "<span data-origin>https://telemetry.community-scripts.org</span>/api/causes?days=7&amp;limit=20"</pre>
+                <p>Every failed run of one cause. Take <code>key</code> from the answer above and URL-encode it:</p>
+                <pre>curl -s -G -H "Authorization: Bearer $PASSWORD" "<span data-origin>https://telemetry.community-scripts.org</span>/api/records" \
+  --data-urlencode "days=7" --data-urlencode "status=failed" --data-urlencode "limit=100" \
+  --data-urlencode "cause=E: Unable to locate package libvips-dev"</pre>
+                <p>One script over the last 30 days:</p>
+                <pre>curl -s -H "Authorization: Bearer $PASSWORD" "<span data-origin>https://telemetry.community-scripts.org</span>/api/script-detail?app=immich&amp;days=30"</pre>
+            </div>
+        </section>
+
+        <section class="section-card">
+            <div class="section-header"><div><h2>Analysis with an AI assistant</h2><p>Any assistant that can send a <code>GET</code> request with a header can read this API.</p></div></div>
+            <div class="api-body">
+                <p>Give it the address of this page and, if it should read failure text, the trace password to send as <code>Authorization: Bearer</code>. A sequence that works well:</p>
+                <ol>
+                    <li><code>/api/errors?days=7</code> for the overview: how much fails, which causes and which apps.</li>
+                    <li><code>/api/causes?days=7&amp;examples=full</code> for each cause with up to three complete example runs, traces included.</li>
+                    <li><code>/api/records?status=failed&amp;cause=…</code> or <code>&amp;app=…</code> when it needs every run of one cause or app. A page holds at most 100 runs; <code>total_pages</code> says how many there are.</li>
+                    <li><code>/api/script-detail?app=…</code> for one script over time.</li>
+                </ol>
+                <ul>
+                    <li>The password also allows <code>POST /api/github/create-issue</code>, which opens a public GitHub issue. Tell an assistant to send <code>GET</code> requests only, unless it is meant to open issues.</li>
+                    <li>With the password, the assistant and its provider receive the failure text. Credentials and e-mail addresses are masked when a report arrives, but the text is behind a password because it is the least filtered data here.</li>
+                    <li>Answers are cached: up to two minutes for periods of at most 7 days, up to a day for longer ones. <code>/api/records</code> is not cached.</li>
+                </ul>
+            </div>
+        </section>
+    </main>
+
+    <script src="/static/js/runs.js?v=4"></script>
+    <script src="/static/js/api-docs.js?v=1"></script>
+</body>
+</html>
