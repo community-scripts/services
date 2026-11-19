@@ -10,7 +10,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500..700&family=JetBrains+Mono:wght@400;500;700&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/css/dashboard.css?v=8">
+    <link rel="stylesheet" href="/static/css/dashboard.css?v=9">
     <link rel="stylesheet" href="/static/css/error-analysis.css?v=6">
 </head>
 <body>
@@ -23,7 +23,6 @@
             <a href="/" class="nav-link">Dashboard</a>
             <a href="/error-analysis" class="nav-link active" aria-current="page">Errors</a>
             <a href="/script-analysis" class="nav-link">Scripts</a>
-            <a href="/apidocs" class="nav-link">API</a>
         </div>
         <div class="navbar-actions">
             <a href="https://github.com/community-scripts/ProxmoxVE" target="_blank" rel="noopener" class="github-stars" id="githubStars">
@@ -160,7 +159,7 @@
         </div>
 
         <section class="section-card api-note">
-            <div class="section-header"><div><h2>Query this data directly</h2><p>Every table on this page comes from a public JSON endpoint that takes the filters above. The <a href="/apidocs">API reference</a> lists the endpoints, their filters and what the trace password adds.</p></div></div>
+            <div class="section-header"><div><h2>Query this data directly</h2><p>Every table on this page comes from a JSON endpoint that takes the filters above. Endpoints and filters are in the <a href="/apidocs">API reference</a>.</p></div></div>
             <div class="api-body">
                 <p class="api-params">This view as JSON: <a id="apiLink" href="/api/errors">/api/errors</a></p>
             </div>

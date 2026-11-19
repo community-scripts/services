@@ -88,7 +88,7 @@ The dashboards are public at `https://telemetry.community-scripts.org/`:
   exit codes and failures over time. Every filter, open cause and app is in the
   URL; causes and apps copy as Markdown and the view exports as JSON.
 - **`/script-analysis`**: per-script runs, failure rate, failing now and last failure; a script opens its runs over time, causes and recent runs.
-- **`/apidocs`**: the JSON endpoints behind these pages, their filters, what the trace password adds and how to point an AI assistant at them.
+- **`/apidocs`**: the JSON endpoints behind these pages with their filters. Not in the navigation; the error page links to it.
 
 Every figure counts **runs**, not telemetry events. A run is all rows that share
 an `execution_id` (the `random_id` for clients that send none). Its outcome is
